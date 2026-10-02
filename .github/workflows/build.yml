@@ -104,6 +104,11 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: apks/app-release.apk
+          # upload-artifact preserves the directory structure below the common
+          # ancestor (app/build/outputs/apk), so the APKs arrive as
+          # apks/debug/app-debug.apk and apks/release/app-release.apk.
+          files: |
+            apks/release/app-release.apk
+            apks/debug/app-debug.apk
           fail_on_unmatched_files: true
           generate_release_notes: true
