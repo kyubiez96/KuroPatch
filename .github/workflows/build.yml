@@ -4,15 +4,21 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Build with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          buildozer_version: latest
-        env:
-          PLATFORM: android
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev libffi-dev python3-dev gzip ccache libffi-dev libssl-dev openjdk-17-jdk zip unzip
+          pip install --upgrade pip setuptools buildozer cython
+      - name: Build with Buildozer
+        run: |
+          buildozer android debug
       - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: KuroPatch-APK
           path: bin/*.apk
