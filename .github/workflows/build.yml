@@ -10,14 +10,15 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-      - name: Build Debug APK with Gradle
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Build with Gradle
         run: |
-          gradle wrapper --gradle-version 8.1.1
-          ./gradlew assembleDebug --no-daemon
+          gradle init --type basic --script-style groovy --quiet || true
+          gradle wrapper
+          ./gradlew assembleDebug
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: KuroPatch-Debug-APK
+          name: KuroPatch-APK
           path: app/build/outputs/apk/debug/app-debug.apk
