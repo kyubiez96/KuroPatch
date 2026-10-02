@@ -1,4 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+      Theme.MaterialComponents extends Theme.AppCompat, which is what
+      AppCompatActivity requires, so this stays valid.
+    -->
     <style name="Theme.KuroPatch" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+        <item name="colorPrimary">@color/kp_primary</item>
+        <item name="colorPrimaryVariant">@color/kp_primary</item>
+        <item name="colorOnPrimary">@color/kp_background</item>
+        <item name="colorSecondary">@color/kp_secondary</item>
+        <item name="android:colorBackground">@color/kp_background</item>
     </style>
 </resources>

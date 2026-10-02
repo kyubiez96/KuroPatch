@@ -1,0 +1,9 @@
+# KuroPatch runtime dependencies.
+#
+# deep-translator is required by the default (--provider google-web) backend.
+# tqdm is optional: the engine falls back to plain iteration when it is absent.
+deep-translator>=1.11.4,<2.0.0
+tqdm>=4.66.0
+
+# Test-only.
+pytest>=8.0.0

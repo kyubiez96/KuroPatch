@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The manifest referenced @mipmap/ic_launcher but the repository contained no
+  icon resources at all, which fails the build in aapt2 with
+  "resource mipmap/ic_launcher not found".
+
+  This is the pre-API-26 fallback: a self-contained vector, so no binary PNG
+  assets are needed. API 26+ uses mipmap-anydpi-v26/ic_launcher.xml instead.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#121212"
+        android:pathData="M0,0h108v108h-108z" />
+
+    <!-- Stylised "K" inside the 72dp adaptive safe zone. -->
+    <path
+        android:fillColor="#BB86FC"
+        android:pathData="M32,26h10v21.5L63.5,26H75L53.2,49.2L76,82H63.8L45.6,55.6L42,59.4V82H32z" />
+
+    <path
+        android:fillColor="#03DAC6"
+        android:pathData="M78,64l6,6l-6,6l-6,-6z" />
+</vector>

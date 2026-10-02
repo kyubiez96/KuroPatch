@@ -1,59 +1,97 @@
 {
-  "name": "Game Translator",
-  "version": "1.0.0",
-  "description": "Automated APK string translator for Java games",
+  "name": "KuroPatch",
+  "version": "1.1.0",
+  "description": "Automated localisation patcher for Java games: .properties resources, smali literals and Android string resources.",
   "config": {
+    "default_source_lang": "en",
     "default_target_lang": "id",
     "batch_size": 50,
     "max_retries": 3,
-    "timeout_seconds": 300,
+    "timeout_seconds": 900,
+    "request_delay_seconds": 0.35,
     "tools": {
       "apktool": {
-        "url": "https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar",
-        "min_version": "2.9.0"
+        "url": "https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar",
+        "min_version": "2.9.0",
+        "install_as": "apktool",
+        "required": true
       },
       "jadx": {
-        "url": "https://github.com/skywinder/jadx/releases/download/v1.5.0/jadx-1.5.0.zip",
-        "min_version": "1.5.0"
+        "url": "https://github.com/skylot/jadx/releases/download/v1.5.0/jadx-1.5.0.zip",
+        "min_version": "1.5.0",
+        "install_as": "jadx",
+        "required": false
       },
       "apksigner": {
         "source": "sdk",
-        "path": "build-tools/*/apksigner"
+        "path": "build-tools/*/apksigner",
+        "required": false
       },
       "zipalign": {
         "source": "sdk",
-        "path": "build-tools/*/zipalign"
+        "path": "build-tools/*/zipalign",
+        "required": false
       }
     },
     "translation": {
+      "default_provider": "google-web",
       "api_options": [
         {
-          "name": "Google Translate",
+          "name": "Google Translate (web)",
+          "id": "google-web",
+          "endpoint": "https://translate.googleapis.com",
+          "requires_key": false,
+          "note": "Free and keyless via deep-translator; rate limited, so requests are spaced out."
+        },
+        {
+          "name": "Google Cloud Translation v2",
+          "id": "google-v2",
           "endpoint": "https://translation.googleapis.com/language/translate/v2",
           "requires_key": true,
+          "key_env": "TRANSLATE_API_KEY",
           "free_tier": "100k chars/month"
         },
         {
           "name": "LibreTranslate",
+          "id": "libretranslate",
           "endpoint": "https://libretranslate.com/translate",
           "requires_key": false,
-          "free_tier": "Unlimited (self-hosted)"
+          "note": "Unlimited when self-hosted; a key is needed for the public instance."
         },
         {
-          "name": "Local Model",
-          "endpoint": "local",
+          "name": "Passthrough",
+          "id": "none",
+          "endpoint": null,
           "requires_key": false,
-          "model": "small",
-          "memory_mb": 512
+          "note": "No translation; used by --dry-run diagnostics and the test suite."
         }
+      ],
+      "preserve": [
+        "printf specifiers (%s, %d, %1$s)",
+        "message placeholders ({0}, {name})",
+        "HTML and XML tags",
+        "XML entities",
+        "\\n, \\t and \\uXXXX escapes"
       ]
     },
     "keystore": {
       "type": "debug",
-      "alias": "key0",
+      "alias": "androiddebugkey",
       "storepass": "android",
       "keypass": "android",
-      "validity_days": 10000
+      "validity_days": 10000,
+      "search_paths": [
+        "$ANDROID_SDK_ROOT/debug.keystore",
+        "$ANDROID_HOME/debug.keystore",
+        "~/.android/debug.keystore"
+      ],
+      "signature_algorithms": {
+        "apksigner": ["v1", "v2", "v3"],
+        "jarsigner_fallback": {
+          "sigalg": "SHA256withRSA",
+          "digestalg": "SHA-256"
+        }
+      }
     }
   }
 }

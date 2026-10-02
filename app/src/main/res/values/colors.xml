@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#121212</color>
+
+    <!-- Dark theme palette, matching the UI wrapper in ui.py. -->
+    <color name="kp_background">#121212</color>
+    <color name="kp_card">#1E1E1E</color>
+    <color name="kp_primary">#BB86FC</color>
+    <color name="kp_secondary">#03DAC6</color>
+    <color name="kp_error">#CF6679</color>
+    <color name="kp_success">#4CAF50</color>
+    <color name="kp_text">#E1E1E1</color>
+    <color name="kp_muted">#888888</color>
+</resources>

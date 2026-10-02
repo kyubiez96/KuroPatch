@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">KuroPatch</string>
+    <string name="engine_title">KuroPatch Game Translator Engine</string>
+    <string name="status_ready">Ready to translate</string>
+</resources>
