@@ -486,11 +486,16 @@ class GameTranslator:
             return False
 
         # No -r and no -s: we need both res/ and smali/.
+        # apktool 3.x requires the output as -o; a trailing positional is
+        # rejected ("Invalid arguments").
+        framework_dir = os.path.join(self.workspace, "apktool")
+        os.makedirs(framework_dir, exist_ok=True)
         cmd = [
             "java", "-jar", self.tools["apktool"],
             "d", "-f",
-            "-p", os.path.join(self.workspace, "apktool"),
-            apk_path, output_dir,
+            "-p", framework_dir,
+            "-o", output_dir,
+            apk_path,
         ]
         self.log(f"Running: {' '.join(cmd)}")
 

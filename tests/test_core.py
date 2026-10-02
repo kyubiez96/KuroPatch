@@ -105,6 +105,12 @@ def test_decompile_command_decodes_resources(wired, monkeypatch, tmp_path):
     assert "-r" not in captured["cmd"]
     assert "-s" not in captured["cmd"]
     assert "d" in captured["cmd"]
+    # apktool 3.x rejects a trailing positional output dir ("Invalid
+    # arguments"); the output must travel as -o.
+    assert "-o" in captured["cmd"]
+    out_index = captured["cmd"].index("-o")
+    assert captured["cmd"][out_index + 1] == wired.decompiled_dir
+    assert captured["cmd"][-1] == str(apk)
 
 
 def test_decompile_without_apktool_fails_cleanly(wired):
