@@ -239,3 +239,230 @@ def test_report_lists_every_string(wired, tmp_path):
     out = read(report)
     assert "Start Game" in out
     assert "Mulai Game" in out
+
+
+# ---------------------------------------------------------------------------
+# Output survival
+# ---------------------------------------------------------------------------
+def _make_signed_apk(path: str, v2: bool = True) -> str:
+    """A minimal but structurally valid APK stand-in."""
+    import zipfile
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("AndroidManifest.xml", b"<manifest/>")
+        archive.writestr("classes.dex", b"\x64\x65\x78")
+        archive.writestr("META-INF/CERT.SF", b"sig")
+        archive.writestr("META-INF/CERT.RSA", b"sig")
+    if v2:
+        with open(path, "ab") as handle:
+            handle.write(b"APK Sig Block 42")
+    return path
+
+
+def test_output_survives_cleanup_when_output_dir_is_omitted(tmp_path, monkeypatch):
+    """Regression: output_dir defaulted into the workspace, so the finished
+    APK was deleted while success=True was reported."""
+    import core
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        if "apktool" in " ".join(cmd) and "b" in cmd:
+            out = cmd[cmd.index("-o") + 1]
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with open(out, "wb") as handle:
+                handle.write(b"APK")
+        return Result()
+
+    monkeypatch.setattr(core.subprocess, "run", fake_run)
+
+    apk = tmp_path / "game.apk"
+    apk.write_bytes(b"PK")
+    engine = core.GameTranslator(output_dir=None, keep_workspace=False)
+    engine.tools["apktool"] = "/fake/apktool.jar"
+
+    valid = str(tmp_path / "valid.apk")
+    _make_signed_apk(valid)
+    monkeypatch.setattr(engine, "preflight", lambda *a, **k: [])
+    monkeypatch.setattr(engine, "decompile_apk", lambda p: True)
+    monkeypatch.setattr(engine, "extract_strings", lambda *a, **k: {"a": "Start Game"})
+    monkeypatch.setattr(engine, "translate_strings", lambda s, *a, **k: dict(s))
+    monkeypatch.setattr(engine, "patch_strings", lambda *a, **k: True)
+    monkeypatch.setattr(engine, "rebuild_apk", lambda *a, **k: valid)
+    monkeypatch.setattr(engine, "sign_apk", lambda p: valid)
+
+    result = engine.run_full_pipeline(str(apk))
+
+    assert result["success"] is True
+    assert os.path.exists(result["output_apk"]), "finished APK must still exist"
+    assert os.path.realpath(result["output_apk"]) != os.path.realpath(engine.workspace)
+    engine.clean_workspace()
+
+
+def test_output_dir_inside_workspace_is_refused(tmp_path):
+    import core
+
+    engine = core.GameTranslator(keep_workspace=True)
+    with pytest.raises(ValueError, match="inside the temp workspace"):
+        engine.resolve_output_dir(
+            str(tmp_path / "game.apk"),
+            os.path.join(engine.workspace, "out"),
+        )
+    engine.clean_workspace()
+
+
+def test_clean_workspace_refuses_to_delete_output(tmp_path, capsys):
+    import core
+
+    engine = core.GameTranslator(output_dir=str(tmp_path / "workspace") , keep_workspace=True)
+    # Simulate the corrupted state directly.
+    engine.output_dir = engine.workspace
+    sentinel = os.path.join(engine.workspace, "keep.apk")
+    with open(sentinel, "wb") as handle:
+        handle.write(b"x")
+    engine.clean_workspace()
+    assert os.path.exists(sentinel), "output must never be deleted"
+    engine.keep_workspace = False
+    engine.output_dir = str(tmp_path / "elsewhere")
+    engine.clean_workspace()
+
+
+# ---------------------------------------------------------------------------
+# Preflight
+# ---------------------------------------------------------------------------
+def test_preflight_rejects_missing_and_non_archive(tmp_path):
+    import core
+
+    engine = core.GameTranslator(output_dir=str(tmp_path / "out"), keep_workspace=True)
+    try:
+        assert engine.preflight(str(tmp_path / "nope.apk")) == [
+            f"no such file: {tmp_path / 'nope.apk'}"
+        ]
+        junk = tmp_path / "junk.apk"
+        junk.write_bytes(b"not a zip")
+        assert engine.preflight(str(junk)) == [f"not a zip archive: {junk}"]
+    finally:
+        engine.clean_workspace()
+
+
+def test_preflight_flags_missing_tools(tmp_path, monkeypatch):
+    import core
+
+    engine = core.GameTranslator(output_dir=str(tmp_path / "out"), keep_workspace=True)
+    monkeypatch.setattr("shutil.which", lambda *a, **k: "/usr/bin/java")
+    try:
+        apk = tmp_path / "game.apk"
+        import zipfile
+
+        with zipfile.ZipFile(apk, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"x")
+        problems = engine.preflight(str(apk))
+        assert any("apktool missing" in p for p in problems)
+    finally:
+        engine.clean_workspace()
+
+
+def test_preflight_flags_bundle_inputs(tmp_path, monkeypatch):
+    import core
+
+    engine = core.GameTranslator(output_dir=str(tmp_path / "out"), keep_workspace=True)
+    monkeypatch.setattr("shutil.which", lambda *a, **k: "/usr/bin/java")
+    try:
+        import zipfile
+
+        bundle = tmp_path / "game.xapk"
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("a", b"x")
+        problems = engine.preflight(str(bundle))
+        assert any("bundle" in p for p in problems)
+    finally:
+        engine.clean_workspace()
+
+
+# ---------------------------------------------------------------------------
+# Verification
+# ---------------------------------------------------------------------------
+def test_verify_apk_accepts_a_signed_apk(tmp_path):
+    import core
+
+    engine = core.GameTranslator(output_dir=str(tmp_path / "out"), keep_workspace=True)
+    try:
+        path = _make_signed_apk(str(tmp_path / "good.apk"))
+        verdict = engine.verify_apk(path)
+        assert verdict["ok"] is True
+        assert verdict["v1"] and verdict["v2"] and verdict["has_dex"] and verdict["has_manifest"]
+    finally:
+        engine.clean_workspace()
+
+
+def test_verify_apk_rejects_an_unsigned_broken_apk(tmp_path):
+    import core
+    import zipfile
+
+    engine = core.GameTranslator(output_dir=str(tmp_path / "out"), keep_workspace=True)
+    try:
+        bad = tmp_path / "bad.apk"
+        with zipfile.ZipFile(bad, "w") as archive:
+            archive.writestr("AndroidManifest.xml", b"<manifest/>")
+        verdict = engine.verify_apk(str(bad))
+        assert verdict["ok"] is False
+        assert any("dex" in p for p in verdict["problems"])
+        assert any("v2" in p for p in verdict["problems"])
+        assert engine.verify_apk(str(tmp_path / "missing.apk"))["ok"] is False
+    finally:
+        engine.clean_workspace()
+
+
+def test_uber_signer_is_used_before_jarsigner(tmp_path, monkeypatch):
+    """The jarsigner-only path emits uninstallable output on modern Android;
+    uber-apk-signer must take precedence whenever it is available."""
+    import core
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        joined = " ".join(cmd)
+        if "uber" in joined:
+            outdir = cmd[cmd.index("-o") + 1]
+            with open(os.path.join(outdir, "x-aligned-debugSigned.apk"), "wb") as handle:
+                handle.write(b"APK")
+        return Result()
+
+    monkeypatch.setattr(core.subprocess, "run", fake_run)
+
+    engine = core.GameTranslator(output_dir=str(tmp_path / "out"), keep_workspace=True)
+    try:
+        engine.tools["uber_apk_signer"] = "/tools/uber-apk-signer.jar"
+        unsigned = tmp_path / "unsigned.apk"
+        unsigned.write_bytes(b"PK")
+        signed = engine._sign_with_uber(str(unsigned))
+        assert signed.endswith("patched_signed.apk")
+        assert os.path.exists(signed)
+    finally:
+        engine.clean_workspace()
+
+
+def test_uber_signer_failure_returns_empty(tmp_path, monkeypatch):
+    import core
+
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(core.subprocess, "run", lambda *a, **k: Result())
+
+    engine = core.GameTranslator(output_dir=str(tmp_path / "out"), keep_workspace=True)
+    try:
+        engine.tools["uber_apk_signer"] = "/tools/uber-apk-signer.jar"
+        unsigned = tmp_path / "unsigned.apk"
+        unsigned.write_bytes(b"PK")
+        assert engine._sign_with_uber(str(unsigned)) == ""
+    finally:
+        engine.clean_workspace()

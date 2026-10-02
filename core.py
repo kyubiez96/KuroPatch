@@ -48,12 +48,16 @@ try:  # optional progress bar
 except ImportError:  # pragma: no cover
     HAS_TQDM = False
 
-APKTOOL_URL = "https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar"
-JADX_URL = "https://github.com/skylot/jadx/releases/download/v1.5.0/jadx-1.5.0.zip"
+APKTOOL_URL = "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar"
+JADX_URL = "https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip"
+# Standalone signer (apksigner v1+v2+v3 + zipalign, pure Java, no Android SDK).
+# Verified on 2026-10-02: produces a valid v1+v2-signed APK.
+UBER_APK_SIGNER_URL = "https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar"
 
 TOOL_URLS = {
     "apktool": APKTOOL_URL,
     "jadx": JADX_URL,
+    "uber_apk_signer": UBER_APK_SIGNER_URL,
 }
 
 # <string name="foo" ...>body</string> and the self-closing variant.
@@ -267,7 +271,10 @@ class GameTranslator:
 
     def __init__(self, output_dir: Optional[str] = None, keep_workspace: bool = False):
         self.workspace = tempfile.mkdtemp(prefix="game_translator_")
-        self.output_dir = output_dir or self.workspace
+        # Never default the output into the workspace: run_full_pipeline() deletes
+        # the workspace on the way out, and output_dir == workspace meant the
+        # finished APK was deleted while success=True was reported.
+        self.output_dir = output_dir
         self.keep_workspace = keep_workspace
 
         self.tools: Dict[str, Optional[str]] = {
@@ -275,6 +282,7 @@ class GameTranslator:
             "jadx": None,
             "apksigner": None,
             "zipalign": None,
+            "uber_apk_signer": None,
         }
         self.keystore_path: Optional[str] = None
         self.keystore_pass = "android"
@@ -288,6 +296,7 @@ class GameTranslator:
         self.batch_size = 50
         self.max_retries = 3
         self.workers = 4
+        self.request_delay = 0.35
 
         # Where every extracted string came from.
         self.sources: List[StringSource] = []
@@ -355,7 +364,7 @@ class GameTranslator:
         """
         self.log(f"Setting up tools in {tools_dir}")
 
-        for tool in ("apktool", "jadx", "apksigner", "zipalign"):
+        for tool in ("apktool", "jadx", "uber_apk_signer", "apksigner", "zipalign"):
             local = os.path.join(tools_dir, tool)
             if os.path.exists(local):
                 self.tools[tool] = local
@@ -401,7 +410,7 @@ class GameTranslator:
 
         self.log("Checking for required tools...")
 
-        for tool in ("apktool", "jadx", "apksigner", "zipalign"):
+        for tool in ("apktool", "jadx", "uber_apk_signer", "apksigner", "zipalign"):
             tool_path = os.path.join(tools_dir, tool)
 
             if os.path.exists(tool_path):
@@ -418,6 +427,14 @@ class GameTranslator:
                     results[tool] = False
                     self.log(f"  - {tool} download failed")
                     continue
+
+                if tool == "uber_apk_signer":
+                    # A single jar, not an archive; nothing to extract.
+                    self.tools[tool] = tool_path
+                    results[tool] = True
+                    self.log(f"  + {tool} installed ({tool_path})")
+                    continue
+
                 if tool_path.endswith(".zip") or zipfile.is_zipfile(tool_path):
                     self._extract_zip(tool_path, os.path.join(tools_dir, tool))
                     # The archive is not the tool; find the executable inside it.
@@ -640,11 +657,16 @@ class GameTranslator:
     def _ensure_engine(self) -> TranslatorEngine:
         if self.engine is None:
             provider_name = "google-v2" if self.api_key else "google-web"
+            # The cache lives next to the output when there is one; otherwise
+            # it stays in the scratch workspace.
+            cache_dir = self.output_dir or self.workspace
+            os.makedirs(cache_dir, exist_ok=True)
             self.engine = TranslatorEngine(
-                cache_file=os.path.join(self.output_dir, "translation_cache.json"),
+                cache_file=os.path.join(cache_dir, "translation_cache.json"),
                 source=self.source_lang,
                 target=self.target_lang,
                 provider_name=provider_name,
+                delay=self.request_delay,
                 max_retries=self.max_retries,
                 api_key=self.api_key or None,
             )
@@ -887,7 +909,7 @@ class GameTranslator:
             self.log("Error: apktool not found, cannot rebuild")
             return ""
 
-        os.makedirs(self.output_dir, exist_ok=True)
+        self._out()
         stem = "patched"
         if input_apk:
             stem = f"{Path(input_apk).stem}_{self.target_lang}"
@@ -963,7 +985,7 @@ class GameTranslator:
             self.log(f"Error: no such file: {apk_path}")
             return ""
 
-        os.makedirs(self.output_dir, exist_ok=True)
+        self._out()
         keystore_path = os.path.join(self.output_dir, "debug.keystore")
         if not os.path.exists(keystore_path) and not self._create_debug_keystore(keystore_path):
             return ""
@@ -1009,7 +1031,20 @@ class GameTranslator:
             except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
                 self.log(f"! apksigner unavailable: {exc}")
 
+        # 2b. uber-apk-signer — v1+v2+v3 plus zipalign in one pure-Java jar, no
+        # Android SDK needed. This is the correct answer on machines like Termux
+        # that have a JDK but no SDK; the jarsigner fallback below is v1-only
+        # and will NOT install on Android 11+ for targetSdk >= 30.
+        if self.tools.get("uber_apk_signer"):
+            signed = self._sign_with_uber(working)
+            if signed:
+                return signed
+            self.log("! uber-apk-signer failed, trying jarsigner")
+
         # 3. jarsigner fallback — v1 only, and SHA1 is rejected by modern Android.
+        self.log("! WARNING: only v1 (jarsigner) signing is available; "
+                 "the result will likely not install on Android 11+ "
+                 "for apps targeting API 30 or newer.")
         signed_jarsigner = os.path.join(self.output_dir, "patched_signed_v1.apk")
         shutil.copy2(working, signed_jarsigner)
         cmd = [
@@ -1034,9 +1069,142 @@ class GameTranslator:
         self.log(f"! Sign error: {(result.stderr or result.stdout).strip()[:500]}")
         return ""
 
+    def _sign_with_uber(self, apk_path: str) -> str:
+        """Sign with uber-apk-signer (v1+v2+v3, zipalign included).
+
+        Uses the embedded debug key unless the caller already pointed
+        ``keystore_path`` at a real keystore. Returns the signed path or "".
+        """
+        uber = self.tools.get("uber_apk_signer")
+        if not uber:
+            return ""
+        self._out()
+
+        import tempfile as _tempfile
+
+        uber_out = _tempfile.mkdtemp(prefix="kuropatch_sign_")
+        before = set(os.listdir(uber_out))
+
+        if self.keystore_path and os.path.isfile(self.keystore_path):
+            cmd = [
+                "java", "-jar", uber,
+                "--allowResign",
+                "--ks", self.keystore_path,
+                "--ksAlias", self.alias,
+                "--ksPass", self.keystore_pass,
+                "--ksKeyPass", self.key_pass,
+                "-a", apk_path,
+                "-o", uber_out,
+            ]
+        else:
+            cmd = [
+                "java", "-jar", uber,
+                "--allowResign", "--debug",
+                "-a", apk_path,
+                "-o", uber_out,
+            ]
+
+        self.log(f"Running uber-apk-signer on {os.path.basename(apk_path)}")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            self.log(f"! uber-apk-signer unavailable: {exc}")
+            shutil.rmtree(uber_out, ignore_errors=True)
+            return ""
+
+        produced = [
+            name for name in os.listdir(uber_out)
+            if name.endswith(".apk") and name not in before
+        ]
+        if result.returncode == 0 and produced:
+            produced.sort(key=lambda name: os.path.getsize(os.path.join(uber_out, name)), reverse=True)
+            final = os.path.join(self.output_dir, "patched_signed.apk")
+            shutil.copy2(os.path.join(uber_out, produced[0]), final)
+            shutil.rmtree(uber_out, ignore_errors=True)
+            if os.path.isfile(final):
+                self.log(f"+ APK signed (uber-apk-signer, v1+v2+v3): {final}")
+                return final
+
+        tail = ((result.stderr or "") + "\n" + (result.stdout or "")).strip()
+        self.log(f"! uber-apk-signer failed: {tail[-500:]}")
+        shutil.rmtree(uber_out, ignore_errors=True)
+        return ""
+
+    def verify_apk(self, apk_path: str) -> Dict:
+        """Sanity-check a finished APK before anyone tries to install it.
+
+        Returns flags plus a human-readable verdict. Anything suspicious is a
+        hard error here, because a silently broken APK costs more than a clear
+        message.
+        """
+        report: Dict = {
+            "path": apk_path,
+            "exists": False,
+            "valid_zip": False,
+            "has_manifest": False,
+            "has_dex": False,
+            "v1": False,
+            "v2": False,
+            "size": 0,
+            "ok": False,
+            "problems": [],
+        }
+        if not apk_path or not os.path.isfile(apk_path):
+            report["problems"].append("no such file")
+            return report
+        report["exists"] = True
+        report["size"] = os.path.getsize(apk_path)
+
+        try:
+            with zipfile.ZipFile(apk_path) as archive:
+                bad = archive.testzip()
+                report["valid_zip"] = bad is None
+                if bad is not None:
+                    report["problems"].append(f"corrupt zip entry: {bad}")
+                names = archive.namelist()
+                report["has_manifest"] = "AndroidManifest.xml" in names
+                report["has_dex"] = any(
+                    name == "classes.dex" or re.match(r"classes\d+\.dex$", name) for name in names
+                )
+                if not report["has_manifest"]:
+                    report["problems"].append("AndroidManifest.xml missing")
+                if not report["has_dex"]:
+                    report["problems"].append("no classes.dex found")
+                report["v1"] = any(
+                    name.startswith("META-INF/") and name.endswith((".RSA", ".DSA", ".EC"))
+                    for name in names
+                )
+                if not report["v1"]:
+                    report["problems"].append("no v1 (JAR) signature")
+        except zipfile.BadZipFile:
+            report["problems"].append("not a valid zip archive")
+            return report
+
+        # v2/v3 lives in the APK Signing Block, outside the zip entries.
+        try:
+            with open(apk_path, "rb") as handle:
+                blob = handle.read()
+            report["v2"] = b"APK Sig Block 42" in blob
+            if not report["v2"]:
+                report["problems"].append(
+                    "no v2/v3 APK Signing Block; will not install on "
+                    "Android 8.0+ / Android 11+ for targetSdk >= 30"
+                )
+        except OSError as exc:
+            report["problems"].append(f"cannot read file: {exc}")
+
+        report["ok"] = not report["problems"]
+        return report
+
     # -- housekeeping ------------------------------------------------------
     def clean_workspace(self) -> None:
-        """Clean up workspace"""
+        """Clean up the temp workspace, but never the output directory."""
+        if self.output_dir:
+            workspace = os.path.realpath(self.workspace)
+            target = os.path.realpath(self.output_dir)
+            if target == workspace or target.startswith(workspace + os.sep):
+                self.log("! output_dir is inside the workspace; refusing to delete output")
+                return
         if os.path.exists(self.workspace):
             shutil.rmtree(self.workspace, ignore_errors=True)
             self.log("+ Cleaned workspace")
@@ -1062,11 +1230,109 @@ class GameTranslator:
         """Get current queue statistics"""
         return self.queue.get_stats()
 
-    def run_full_pipeline(self, apk_path: str, output_dir: Optional[str] = None) -> Dict:
-        """Run complete translation pipeline."""
+    def resolve_output_dir(self, apk_path: str, output_dir: Optional[str] = None) -> str:
+        """Decide where artifacts go, and make sure the workspace cannot eat them.
+
+        The default is a sibling directory of the input APK, never the temp
+        workspace (which is deleted after the run).
+        """
         if output_dir:
             self.output_dir = output_dir
+        if not self.output_dir:
+            apk_dir = os.path.dirname(os.path.abspath(apk_path)) or "."
+            self.output_dir = os.path.join(apk_dir, "kuropatch_out")
+        os.makedirs(self.output_dir, exist_ok=True)
 
+        workspace = os.path.realpath(self.workspace)
+        target = os.path.realpath(self.output_dir)
+        if target == workspace or target.startswith(workspace + os.sep):
+            raise ValueError(
+                f"output_dir ({self.output_dir}) lives inside the temp workspace; "
+                "it would be deleted. Choose a directory outside it."
+            )
+        return self.output_dir
+
+    def _out(self) -> str:
+        """Return the resolved output dir, creating it. Clear error if unset."""
+        if not self.output_dir:
+            raise RuntimeError(
+                "output_dir is not set; pass it to GameTranslator() "
+                "or run it through run_full_pipeline()"
+            )
+        os.makedirs(self.output_dir, exist_ok=True)
+        return self.output_dir
+
+    def preflight(self, apk_path: str, tools_dir: Optional[str] = None) -> List[str]:
+        """Check everything that would fail the run, before spending an hour.
+
+        Returns a list of human-readable problems (empty = ready to go).
+        """
+        problems: List[str] = []
+
+        if not apk_path or not os.path.isfile(apk_path):
+            return [f"no such file: {apk_path}"]
+        if not zipfile.is_zipfile(apk_path):
+            return [f"not a zip archive: {apk_path}"]
+        size = os.path.getsize(apk_path)
+        if size == 0:
+            problems.append("input file is empty")
+
+        lowered = os.path.basename(apk_path).lower()
+        if lowered.endswith((".xapk", ".apkm", ".apks")):
+            problems.append(
+                f"{lowered} is an app bundle, not a plain APK — "
+                "install all splits or unpack the bundle first"
+            )
+        if "base" in lowered and ("split" in lowered or lowered.startswith("base")):
+            problems.append(
+                f"{lowered} looks like one split of a bundle; patched splits "
+                "only install together with their siblings"
+            )
+
+        if not shutil.which("java"):
+            problems.append("java not found on PATH (install openjdk-17)")
+        else:
+            try:
+                probe = subprocess.run(
+                    ["java", "-version"], capture_output=True, text=True, timeout=30
+                )
+                combined = (probe.stderr or "") + (probe.stdout or "")
+                if " 17" not in combined and " 21" not in combined and " 11" not in combined:
+                    problems.append(f"java found but version looks old: {combined.strip().splitlines()[0][:80]}")
+            except (OSError, subprocess.TimeoutExpired):
+                problems.append("java exists but would not run")
+
+        apktool = self.tools.get("apktool")
+        if not apktool:
+            if tools_dir:
+                candidate = os.path.join(tools_dir, "apktool")
+                if os.path.isfile(candidate):
+                    apktool = candidate
+            if not apktool:
+                problems.append("apktool missing — call download_tools() or setup_tools() first")
+
+        if not self.tools.get("apksigner") and not self.tools.get("uber_apk_signer"):
+            problems.append(
+                "no v2-capable signer (apksigner or uber-apk-signer); "
+                "the jarsigner fallback is v1-only and will likely not install"
+            )
+
+        # apktool needs several times the APK size in scratch space.
+        try:
+            free = shutil.disk_usage(os.path.dirname(os.path.abspath(apk_path)) or ".").free
+            want = size * 5 + 256 * 1024 * 1024
+            if free < want:
+                problems.append(
+                    f"low disk: {free // 1024 // 1024} MB free, "
+                    f"~{want // 1024 // 1024} MB recommended for {size // 1024 // 1024} MB APK"
+                )
+        except OSError:  # pragma: no cover
+            pass
+
+        return problems
+
+    def run_full_pipeline(self, apk_path: str, output_dir: Optional[str] = None) -> Dict:
+        """Run complete translation pipeline."""
         results: Dict = {
             "success": False,
             "output_apk": "",
@@ -1076,6 +1342,20 @@ class GameTranslator:
         }
 
         try:
+            self.resolve_output_dir(apk_path, output_dir)
+        except (OSError, ValueError) as exc:
+            results["errors"].append(f"Cannot use output directory: {exc}")
+            return results
+
+        try:
+            # Step 0: Preflight
+            blockers = self.preflight(apk_path)
+            if blockers:
+                results["errors"].extend(f"Preflight: {p}" for p in blockers)
+                for problem in blockers:
+                    self.log(f"! Preflight: {problem}")
+                return results
+
             # Step 1: Decompile
             if not self.decompile_apk(apk_path):
                 results["errors"].append("Failed to decompile APK")
@@ -1113,6 +1393,15 @@ class GameTranslator:
             if not signed:
                 results["errors"].append("Failed to sign APK")
                 return results
+
+            # Step 7: Verify — a silently broken APK costs more than a clear error.
+            verdict = self.verify_apk(signed)
+            results["verification"] = verdict
+            if not verdict["ok"]:
+                results["errors"].extend(f"Verification: {p}" for p in verdict["problems"])
+                return results
+            self.log(f"+ Verified: {verdict['size']:,} bytes, "
+                     f"v1={verdict['v1']} v2={verdict['v2']}, dex={verdict['has_dex']}")
 
             results["success"] = True
             results["output_apk"] = signed

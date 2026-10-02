@@ -39,8 +39,21 @@ could be translated.
 
 ### Full APK pipeline
 
+```bash
+python apk.py game.apk -t id -o out/
+```
+
+`python apk.py` is the front end for real `.apk` files
+(preflight → apktool decompile → extract → translate → patch → rebuild →
+sign with v1+v2+v3 → verify). It needs a JDK 17 on `PATH`; `apktool` and the
+standalone `uber-apk-signer` are downloaded into `--tools` automatically, so no
+Android SDK is required.
+
+The same flow is available as a library:
+
 `core.GameTranslator.run_full_pipeline()` does the whole flow:
-apktool decompile → extract → translate → patch → rebuild → zipalign → sign.
+apktool decompile → extract → translate → patch → rebuild → zipalign → sign,
+then verifies the result is a valid, v2-signed APK.
 
 ```python
 from core import GameTranslator

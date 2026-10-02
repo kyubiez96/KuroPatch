@@ -1,6 +1,6 @@
 {
   "name": "KuroPatch",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Automated localisation patcher for Java games: .properties resources, smali literals and Android string resources.",
   "config": {
     "default_source_lang": "en",
@@ -11,13 +11,13 @@
     "request_delay_seconds": 0.35,
     "tools": {
       "apktool": {
-        "url": "https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar",
-        "min_version": "2.9.0",
+        "url": "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar",
+        "min_version": "3.0.0",
         "install_as": "apktool",
         "required": true
       },
       "jadx": {
-        "url": "https://github.com/skylot/jadx/releases/download/v1.5.0/jadx-1.5.0.zip",
+        "url": "https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip",
         "min_version": "1.5.0",
         "install_as": "jadx",
         "required": false
@@ -31,6 +31,13 @@
         "source": "sdk",
         "path": "build-tools/*/zipalign",
         "required": false
+      },
+      "uber_apk_signer": {
+        "url": "https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar",
+        "min_version": "1.3.0",
+        "install_as": "uber_apk_signer",
+        "required": true,
+        "note": "Standalone v1+v2+v3 signer plus zipalign (pure Java, no Android SDK). Preferred over jarsigner, whose v1-only output will not install on Android 11+ for apps targeting API 30+."
       }
     },
     "translation": {
@@ -86,7 +93,11 @@
         "~/.android/debug.keystore"
       ],
       "signature_algorithms": {
-        "apksigner": ["v1", "v2", "v3"],
+        "apksigner": [
+          "v1",
+          "v2",
+          "v3"
+        ],
         "jarsigner_fallback": {
           "sigalg": "SHA256withRSA",
           "digestalg": "SHA-256"
