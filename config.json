@@ -1,0 +1,59 @@
+{
+  "name": "Game Translator",
+  "version": "1.0.0",
+  "description": "Automated APK string translator for Java games",
+  "config": {
+    "default_target_lang": "id",
+    "batch_size": 50,
+    "max_retries": 3,
+    "timeout_seconds": 300,
+    "tools": {
+      "apktool": {
+        "url": "https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar",
+        "min_version": "2.9.0"
+      },
+      "jadx": {
+        "url": "https://github.com/skywinder/jadx/releases/download/v1.5.0/jadx-1.5.0.zip",
+        "min_version": "1.5.0"
+      },
+      "apksigner": {
+        "source": "sdk",
+        "path": "build-tools/*/apksigner"
+      },
+      "zipalign": {
+        "source": "sdk",
+        "path": "build-tools/*/zipalign"
+      }
+    },
+    "translation": {
+      "api_options": [
+        {
+          "name": "Google Translate",
+          "endpoint": "https://translation.googleapis.com/language/translate/v2",
+          "requires_key": true,
+          "free_tier": "100k chars/month"
+        },
+        {
+          "name": "LibreTranslate",
+          "endpoint": "https://libretranslate.com/translate",
+          "requires_key": false,
+          "free_tier": "Unlimited (self-hosted)"
+        },
+        {
+          "name": "Local Model",
+          "endpoint": "local",
+          "requires_key": false,
+          "model": "small",
+          "memory_mb": 512
+        }
+      ]
+    },
+    "keystore": {
+      "type": "debug",
+      "alias": "key0",
+      "storepass": "android",
+      "keypass": "android",
+      "validity_days": 10000
+    }
+  }
+}
