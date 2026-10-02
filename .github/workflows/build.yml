@@ -62,18 +62,21 @@ jobs:
       - name: Install SDK packages
         run: sdkmanager --install "platforms;android-34" "build-tools;34.0.0"
 
-      # NOTE: the previous workflow ran `gradle init --type basic` here, which
-      # OVERWRITES build.gradle with an empty template and destroys the project.
-      # The repository has no committed Gradle wrapper, so generate just the
-      # wrapper using the Gradle already present on the runner image.
-      - name: Generate Gradle wrapper
-        run: gradle wrapper --gradle-version 8.2 --distribution-type bin
-
+      # NOTE: this repository has no committed Gradle wrapper, so the version is
+      # pinned here instead. Two earlier approaches failed:
+      #   - `gradle wrapper --gradle-version 8.2` uses whatever Gradle is
+      #     preinstalled on the runner (currently 9.x), which cannot configure
+      #     AGP 8.1 and fails during the wrapper task itself.
+      #   - `gradle init --type basic` overwrites build.gradle with an empty
+      #     template and destroys the project.
+      # `gradle-version` makes setup-gradle install 8.2, which AGP 8.1 supports.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.2'
 
       - name: Build with Gradle
-        run: ./gradlew assembleDebug assembleRelease --stacktrace
+        run: gradle assembleDebug assembleRelease --stacktrace
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
