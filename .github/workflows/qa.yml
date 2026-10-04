@@ -1,0 +1,58 @@
+name: QA gates
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qa-gates:
+    name: KuroPatch QA gates (self-test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run QA gates
+        run: |
+          set -u
+          Q="python3 tools/qa/qa.py"
+          C="tools/qa/fixtures/clean"
+          D="tools/qa/fixtures/dirty"
+          fail=0
+          # expect <code> <label> <command...>: fail job unless exit matches
+          expect() {
+            local want=$1; shift; local label=$1; shift
+            "$@" >/tmp/qa-out.json 2>&1; local code=$?
+            if [ "$code" -eq "$want" ]; then
+              echo "OK   $label (exit $code as expected)"
+            else
+              echo "::error::$label: expected exit $want, got $code"
+              head -c 500 /tmp/qa-out.json; echo
+              fail=1
+            fi
+          }
+          # clean fixtures: every gate must pass (exit 0)
+          expect 0 "recon/clean"   $Q recon "$C/fake.apk"
+          expect 0 "delta/clean"   $Q delta --old "$C/v1.xml" --new "$C/v2.xml"
+          expect 0 "glossary/clean" $Q glossary --glossary "$C/glossary.tsv" --strings "$C/strings.xml"
+          expect 0 "typo/clean"    $Q typo --strings "$C/strings.xml" --formal
+          expect 0 "sample/clean"  $Q sample --strings "$C/strings.xml" -n 2 --seed 7
+          # dirty fixtures: gates must FIND the issues (exit 1)
+          expect 1 "delta/dirty"   $Q delta --old "$D/v1.xml" --new "$D/v2.xml"
+          expect 1 "glossary/dirty" $Q glossary --glossary "$D/glossary.tsv" --strings "$D/strings.xml"
+          expect 1 "typo/dirty"    $Q typo --strings "$D/strings.xml" --formal
+          # glyph: system DejaVu covers Latin -> pass; Telugu -> issues
+          FONT=$(fc-match -f '%{file}\n' 'DejaVu Sans' | head -1)
+          expect 0 "glyph/clean"   $Q glyph --font "$FONT" --strings "$C/strings.xml"
+          # keystore: no apksigner/keytool on runner -> SKIP (exit 2) is fine
+          $Q keystore --apk "$C/fake.apk" --expect AA:BB >/dev/null 2>&1; code=$?
+          if [ "$code" -eq 2 ]; then echo "OK   keystore: SKIP as expected (no sign tools)"; else echo "::warning::keystore: unexpected exit $code"; fi
+          exit $fail
