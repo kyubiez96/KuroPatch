@@ -27,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Dict, List, Optional, Pattern, Tuple
+from typing import Any, Callable, Dict, List, Optional, Pattern, Tuple
 __all__ = [
     "TranslationResult",
     "TranslatorEngine",
@@ -191,6 +191,14 @@ class BaseProvider:
     def translate(self, text: str) -> str:  # pragma: no cover - interface
         raise NotImplementedError
 
+    def translate_batch(self, texts: List[str]) -> List[str]:
+        """Translate multiple texts in fewer API calls.
+
+        Default implementation loops over :meth:`translate`. Providers whose
+        backend supports batch requests should override this.
+        """
+        return [self.translate(t) for t in texts]
+
     def close(self) -> None:
         """Release provider resources."""
 
@@ -228,6 +236,17 @@ class GoogleWebProvider(BaseProvider):
         if result is None:
             raise RuntimeError("google-web returned no result")
         return str(result)
+
+    def translate_batch(self, texts: List[str]) -> List[str]:
+        results = self._backend.translate_batch(texts)
+        if results is None:
+            raise RuntimeError("google-web returned no result")
+        out = [str(r) for r in results]
+        if len(out) != len(texts):
+            raise RuntimeError(
+                f"google-web batch size mismatch: {len(out)} != {len(texts)}"
+            )
+        return out
 
 
 class GoogleV2Provider(BaseProvider):
@@ -365,6 +384,18 @@ class _RateLimiter:
         sleep_for = slot - now
         if sleep_for > 0:
             time.sleep(sleep_for)
+
+
+def _provider_batch(provider: Any, texts: List[str]) -> List[str]:
+    """Call provider.translate_batch, falling back to per-string translate.
+
+    Providers are not required to inherit BaseProvider (tests use standalone
+    fakes), so the batch method may not exist.
+    """
+    fn = getattr(provider, "translate_batch", None)
+    if fn is not None:
+        return fn(texts)
+    return [provider.translate(t) for t in texts]
 
 
 class TranslatorEngine:
@@ -536,29 +567,160 @@ class TranslatorEngine:
         texts: List[str],
         on_result: Optional[Callable[[TranslationResult], None]] = None,
         workers: int = 1,
+        batch_size: int = 20,
+        group_size: int = 100,
     ) -> List[TranslationResult]:
         """Translate a list, reusing the cache; results keep input order.
 
-        ``workers`` > 1 fans the cache lookups out across threads. The provider
-        calls themselves stay serialised by the rate limiter, so raising this
-        does not get the account rate-limited.
+        Translatable chunks from all strings are batched into as few provider
+        calls as possible (``batch_size`` chunks per call). Placeholder
+        protection is applied per string before batching, so protected tokens
+        never reach the provider. Strings are processed in groups of
+        ``group_size`` so ``on_result`` fires progressively.
         """
         results: List[Optional[TranslationResult]] = [None] * len(texts)
 
-        def run(index: int, text: str) -> None:
-            results[index] = self.translate_detailed(text)
-            if on_result:
+        def emit(index: int) -> None:
+            if on_result and results[index] is not None:
                 on_result(results[index])  # type: ignore[arg-type]
 
-        if workers and workers > 1 and len(texts) > 1:
-            with ThreadPoolExecutor(max_workers=min(workers, 8)) as pool:
-                list(pool.map(lambda pair: run(pair[0], pair[1]), list(enumerate(texts))))
-        else:
-            for index, text in enumerate(texts):
-                run(index, text)
+        # Phase 1 (all strings): per-string checks that need no API calls.
+        pending: List[int] = []
+        for index, text in enumerate(texts):
+            original = text.strip()
+            if not original:
+                results[index] = TranslationResult(text, text, "skipped", skipped_reason="empty")
+                emit(index)
+                continue
+            ok, reason = should_translate(original, self.target, self.translate_all)
+            if not ok:
+                with self._lock:
+                    self.stats["skipped"] += 1
+                results[index] = TranslationResult(text, text, "skipped", skipped_reason=reason)
+                emit(index)
+                continue
+            cache_key = self._cache_key(original)
+            with self._lock:
+                cached = self.cache.get(cache_key)
+            if cached is not None:
+                with self._lock:
+                    self.stats["cached"] += 1
+                results[index] = TranslationResult(text, cached, "cached")
+                emit(index)
+                continue
+            pending.append(index)
+
+        # Phases 2-3 run per group so progress is reported incrementally.
+        for group_start in range(0, len(pending), group_size):
+            group_indices = pending[group_start : group_start + group_size]
+            self._translate_group(group_indices, texts, results, batch_size)
+            for index in group_indices:
+                emit(index)
 
         self.flush()
         return [r for r in results if r is not None]
+
+    def _translate_group(
+        self,
+        indices: List[int],
+        texts: List[str],
+        results: List[Optional[TranslationResult]],
+        batch_size: int,
+    ) -> None:
+        """Batch-translate one group of string indices (mutates ``results``)."""
+        items: List[Tuple[int, str, str, List[str], List[Tuple[int, int]]]] = []
+        for index in indices:
+            text = texts[index]
+            original = text.strip()
+            masked, tokens = protect_segments(original)
+            chunks: List[Tuple[int, int]] = []
+            cursor = 0
+            for match in _MASK_RE.finditer(masked):
+                if match.start() > cursor:
+                    chunks.append((cursor, match.start()))
+                cursor = match.end()
+            if cursor < len(masked):
+                chunks.append((cursor, len(masked)))
+            if not chunks:
+                results[index] = TranslationResult(text, text, "done")
+                with self._lock:
+                    self.stats["done"] += 1
+                continue
+            items.append((index, text, masked, tokens, chunks))
+
+        flat_chunks: List[str] = []
+        chunk_refs: List[Tuple[int, int]] = []
+        for item_pos, (index, text, masked, tokens, chunks) in enumerate(items):
+            for chunk_pos, (start, end) in enumerate(chunks):
+                flat_chunks.append(masked[start:end])
+                chunk_refs.append((item_pos, chunk_pos))
+
+        translated_chunks: List[str] = [""] * len(flat_chunks)
+        failed_items: set = set()
+        for batch_start in range(0, len(flat_chunks), batch_size):
+            batch = flat_chunks[batch_start : batch_start + batch_size]
+            batch_translated: List[str] = []
+            for attempt in range(self.max_retries):
+                try:
+                    self._limiter.wait()
+                    batch_translated = _provider_batch(self.provider, batch)
+                    if len(batch_translated) != len(batch) or any(
+                        not t.strip() for t in batch_translated
+                    ):
+                        raise RuntimeError("provider returned bad batch translation")
+                    break
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - retried, then reported
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    batch_translated = []
+                    if attempt + 1 < self.max_retries:
+                        backoff = (1.5 ** attempt) + random.uniform(0, 0.4)
+                        time.sleep(min(backoff, 8.0))
+            if batch_translated:
+                translated_chunks[batch_start : batch_start + len(batch_translated)] = batch_translated
+            else:
+                for i in range(batch_start, min(batch_start + batch_size, len(flat_chunks))):
+                    item_pos, _ = chunk_refs[i]
+                    failed_items.add(item_pos)
+
+        item_chunks: Dict[int, List[Tuple[int, str]]] = {}
+        for flat_i, (item_pos, chunk_pos) in enumerate(chunk_refs):
+            item_chunks.setdefault(item_pos, []).append((chunk_pos, translated_chunks[flat_i]))
+
+        for item_pos, (index, text, masked, tokens, chunks) in enumerate(items):
+            if item_pos in failed_items:
+                with self._lock:
+                    self.stats["error"] += 1
+                results[index] = TranslationResult(text, text, "error", error=self.last_error)
+                continue
+            got = {pos: t for pos, t in item_chunks.get(item_pos, [])}
+            pieces: List[str] = []
+            cursor = 0
+            ok = True
+            for chunk_i, (start, end) in enumerate(chunks):
+                pieces.append(masked[cursor:start])
+                if chunk_i not in got or not got[chunk_i].strip():
+                    ok = False
+                    break
+                pieces.append(got[chunk_i])
+                cursor = end
+            if not ok:
+                with self._lock:
+                    self.stats["error"] += 1
+                results[index] = TranslationResult(text, text, "error", error="missing chunk translation")
+                continue
+            pieces.append(masked[cursor:])
+            translated = restore_segments("".join(pieces), tokens)
+            cache_key = self._cache_key(text.strip())
+            with self._lock:
+                self.cache[cache_key] = translated
+                self.stats["done"] += 1
+                self._dirty += 1
+                should_flush = self._dirty >= self.flush_every
+            if should_flush:
+                self.flush()
+            results[index] = TranslationResult(text, translated, "done")
 
     def close(self) -> None:
         try:
