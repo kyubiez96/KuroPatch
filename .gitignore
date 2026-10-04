@@ -44,3 +44,6 @@ captures/
 # OS
 .DS_Store
 Thumbs.db
+
+# QA fixtures: fake APKs used by the recon gate (tools/qa).
+!tools/qa/fixtures/**/*.apk
