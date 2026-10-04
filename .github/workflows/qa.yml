@@ -23,6 +23,11 @@ jobs:
       - name: Run QA gates
         run: |
           set -u
+          # Runner invokes bash -e; gates exit non-zero BY DESIGN
+          # (dirty fixtures must trip them), so disable errexit here.
+          # The expect() harness asserts exit codes itself.
+          set +e
+          python3 --version; ls tools/qa tools/qa/fixtures/clean
           Q="python3 tools/qa/qa.py"
           C="tools/qa/fixtures/clean"
           D="tools/qa/fixtures/dirty"
