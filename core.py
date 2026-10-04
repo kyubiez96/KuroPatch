@@ -65,6 +65,21 @@ _STRING_RE = re.compile(
     r'<string\s+name="(?P<name>[^"]+)"(?P<attrs>[^>]*?)(?:/>|>(?P<body>.*?)</string>)',
     re.DOTALL,
 )
+# <string-array name="foo"><item>bar</item>...</string-array>
+_STRING_ARRAY_RE = re.compile(
+    r'<string-array\s+name="(?P<name>[^"]+)"(?P<attrs>[^>]*?)>(?P<body>.*?)</string-array>',
+    re.DOTALL,
+)
+# <plurals name="foo"><item quantity="one">bar</item>...</plurals>
+_PLURALS_RE = re.compile(
+    r'<plurals\s+name="(?P<name>[^"]+)"(?P<attrs>[^>]*?)>(?P<body>.*?)</plurals>',
+    re.DOTALL,
+)
+# <item>body</item> and the quantity-qualified variant.
+_ITEM_RE = re.compile(
+    r'<item(?:\s+quantity="(?P<quantity>[^"]+)")?[^>]*?>(?P<body>.*?)</item>',
+    re.DOTALL,
+)
 # A whole XML tag, including its attributes and slash: <b>, </b>, <xliff:g id="x">
 _TAG_RE = re.compile(r"<\s*/?\s*[A-Za-z][\w.:-]*(?:\s[^<>]*?)?/?\s*>")
 _TAG_NAME_RE = re.compile(r"<\s*(/?)\s*([A-Za-z][\w.:-]*)")
@@ -286,6 +301,8 @@ class GameTranslator:
         }
         self.keystore_path: Optional[str] = None
         self.keystore_pass = "android"
+        self.provider_name: Optional[str] = None
+        self.translate_all: bool = False
         self.alias = "androiddebugkey"
         self.key_pass = "android"
 
@@ -436,9 +453,13 @@ class GameTranslator:
                     continue
 
                 if tool_path.endswith(".zip") or zipfile.is_zipfile(tool_path):
-                    self._extract_zip(tool_path, os.path.join(tools_dir, tool))
+                    # Extract beside the archive, never onto its own path:
+                    # dest == archive used to make extractall() fail silently
+                    # (caught below) and left the tool pointing at a zip file.
+                    extract_dir = tool_path + ".extracted"
+                    self._extract_zip(tool_path, extract_dir)
                     # The archive is not the tool; find the executable inside it.
-                    extracted = glob.glob(os.path.join(tools_dir, tool, "**", tool), recursive=True)
+                    extracted = glob.glob(os.path.join(extract_dir, "**", tool), recursive=True)
                     if extracted:
                         os.chmod(extracted[0], 0o755)
                         self.tools[tool] = extracted[0]
@@ -584,6 +605,10 @@ class GameTranslator:
         cannot round-trip inline formatting. A regex keeps the resource body
         exactly as apktool emitted it, so ``<b>`` stays a tag and ``%s`` stays a
         format specifier.
+
+        ``<string-array>`` and ``<plurals>`` items are extracted too, keyed as
+        ``name[index]`` and ``name:quantity`` — a game that only translates
+        ``<string>`` leaves half its UI untranslated.
         """
         strings: Dict[str, str] = {}
         try:
@@ -593,15 +618,28 @@ class GameTranslator:
             self.log(f"Error reading {xml_path}: {exc}")
             return strings
 
-        for match in _STRING_RE.finditer(text):
-            key = match.group("name")
-            body = match.group("body") or ""
+        def _store(key: str, body: str) -> None:
             if key and body.strip():
                 if tags_out is not None:
                     # Tags come from the raw body: after entity decoding,
                     # escaped text such as &lt;hi&gt; would look like a tag.
                     tags_out[key] = {_tag_name(tag) for tag in _TAG_RE.findall(body)}
                 strings[key] = _decode_resource_body(body).strip()
+
+        for match in _STRING_RE.finditer(text):
+            _store(match.group("name"), match.group("body") or "")
+
+        for match in _STRING_ARRAY_RE.finditer(text):
+            name = match.group("name")
+            for index, item in enumerate(_ITEM_RE.finditer(match.group("body") or "")):
+                _store(f"{name}[{index}]", item.group("body") or "")
+
+        for match in _PLURALS_RE.finditer(text):
+            name = match.group("name")
+            for item in _ITEM_RE.finditer(match.group("body") or ""):
+                quantity = item.group("quantity") or "other"
+                _store(f"{name}:{quantity}", item.group("body") or "")
+
         return strings
 
     def _resources_stub(self) -> str:
@@ -661,7 +699,7 @@ class GameTranslator:
     # -- translate ---------------------------------------------------------
     def _ensure_engine(self) -> TranslatorEngine:
         if self.engine is None:
-            provider_name = "google-v2" if self.api_key else "google-web"
+            provider_name = self.provider_name or ("google-v2" if self.api_key else "google-web")
             # The cache lives next to the output when there is one; otherwise
             # it stays in the scratch workspace.
             cache_dir = self.output_dir or self.workspace
@@ -674,13 +712,16 @@ class GameTranslator:
                 delay=self.request_delay,
                 max_retries=self.max_retries,
                 api_key=self.api_key or None,
+                translate_all=self.translate_all,
             )
         return self.engine
 
-    def translate_strings(self, strings: Dict[str, str], source_lang: Optional[str] = None) -> Dict[str, str]:
+    def translate_strings(self, strings: Dict[str, str], source_lang: Optional[str] = None,
+                          translate_all: bool = False) -> Dict[str, str]:
         """Translate every distinct string exactly once."""
         if source_lang:
             self.source_lang = source_lang
+        self.translate_all = translate_all
         self.set_status("translating", f"Translating {len(strings)} strings...")
         self.log(f"Starting translation: {len(strings)} strings -> {self.target_lang}")
 
@@ -691,7 +732,9 @@ class GameTranslator:
         def work(value: str) -> None:
             self.queue.mark_start(value)
             result = engine.translate_detailed(value)
-            if result.status == "done":
+            # "cached" is a produced translation, not a miss: it must be
+            # written back exactly like a fresh one.
+            if result.status in ("done", "cached"):
                 self.queue.mark_done(value, result.translated)
             elif result.status == "skipped":
                 self.queue.mark_skipped(value, result.skipped_reason)
@@ -850,22 +893,95 @@ class GameTranslator:
 
     @staticmethod
     def _insert_resource_value(text: str, key: str, value: str, keep_tags: Optional[set] = None) -> str:
-        """Add a ``<string>`` element to a resource file that lacks it."""
+        """Add a resource element to a file that lacks it.
+
+        Composite keys (``name[idx]`` for ``<string-array>``, ``name:quantity``
+        for ``<plurals>``) grow or create the enclosing block; plain keys become
+        a ``<string>`` element as before.
+        """
         if "</resources>" not in text:
             return text
         body = _encode_resource_body(value, allowed_tags=keep_tags)
+
+        array_match = re.fullmatch(r"(?P<name>.+)\[(?P<index>\d+)\]", key or "")
+        plural_match = re.fullmatch(r"(?P<name>[^:]+):(?P<quantity>[^:]+)", key or "")
+        if array_match or plural_match:
+            if array_match:
+                name = array_match.group("name")
+                open_tag = f'<string-array name="{name}"'
+                close_tag = "</string-array>"
+                element = f"        <item>{body}</item>\n"
+            else:
+                name = plural_match.group("name")  # type: ignore[union-attr]
+                quantity = plural_match.group("quantity")  # type: ignore[union-attr]
+                open_tag = f'<plurals name="{name}"'
+                close_tag = "</plurals>"
+                element = f'        <item quantity="{quantity}">{body}</item>\n'
+            block_re = re.compile(
+                re.escape(open_tag) + r"[^>]*>(?P<body>.*?)" + re.escape(close_tag),
+                re.DOTALL,
+            )
+            block = block_re.search(text)
+            if block:
+                insert_at = block.start() + len(block.group(0)) - len(close_tag)
+                return text[:insert_at] + element + text[insert_at:]
+            new_block = f"    {open_tag}>\n{element}    {close_tag}\n"
+            index = text.rindex("</resources>")
+            return text[:index] + new_block + text[index:]
+
         element = f'    <string name="{key}">{body}</string>\n'
         index = text.rindex("</resources>")
         return text[:index] + element + text[index:]
 
     @staticmethod
     def _replace_resource_value(text: str, key: str, value: str, keep_tags: Optional[set] = None) -> str:
-        """Replace one ``<string name="key">`` body, keeping the surrounding XML.
+        """Replace one resource body, keeping the surrounding XML.
+
+        Handles plain ``<string name="key">`` as well as composite keys:
+        ``name[idx]`` targets the idx-th ``<item>`` of ``<string-array>``,
+        ``name:quantity`` targets the matching ``<item>`` of ``<plurals>``.
 
         Inline markup that was present in the original value (``<b>``, ``<xliff:g>``)
         is preserved as a tag; everything else is XML-escaped, so a translation
         containing ``&`` or ``<`` cannot produce a broken resource file.
         """
+        body = _encode_resource_body(value, allowed_tags=keep_tags)
+
+        array_match = re.fullmatch(r"(?P<name>.+)\[(?P<index>\d+)\]", key or "")
+        plural_match = re.fullmatch(r"(?P<name>[^:]+):(?P<quantity>[^:]+)", key or "")
+        if array_match or plural_match:
+            if array_match:
+                name, want_index = array_match.group("name"), int(array_match.group("index"))
+                open_tag, close_tag = f'<string-array name="{name}"', "</string-array>"
+                item_filter = lambda m: True  # noqa: E731 - positional match
+                use_quantity = None
+            else:
+                name = plural_match.group("name")  # type: ignore[union-attr]
+                use_quantity = plural_match.group("quantity")  # type: ignore[union-attr]
+                want_index = -1
+                open_tag, close_tag = f'<plurals name="{name}"', "</plurals>"
+                item_filter = lambda m: m.group("quantity") == use_quantity  # noqa: E731
+            block_re = re.compile(
+                r"(" + re.escape(open_tag) + r"[^>]*>)(?P<body>.*?)(" + re.escape(close_tag) + r")",
+                re.DOTALL,
+            )
+            block = block_re.search(text)
+            if block is None:
+                return text
+            inner = block.group("body")
+            items = [m for m in _ITEM_RE.finditer(inner) if item_filter(m)]
+            target = None
+            if array_match:
+                target = items[want_index] if want_index < len(items) else None
+            else:
+                target = items[0] if items else None
+            if target is None:
+                return text
+            new_inner = (
+                inner[: target.start("body")] + body + inner[target.end("body") :]
+            )
+            return text[: block.start("body")] + new_inner + text[block.end("body") :]
+
         pattern = re.compile(
             r'(<string\s+name="' + re.escape(key) + r'"\s*(?P<attrs>[^>]*?)>)(?P<body>.*?)(</string>)',
             re.DOTALL,
@@ -874,7 +990,6 @@ class GameTranslator:
         if match is None:
             return text
 
-        body = _encode_resource_body(value, allowed_tags=keep_tags)
         replacement = f"{match.group(1)}{body}{match.group(4)}"
         return text[: match.start()] + replacement + text[match.end():]
 
@@ -919,6 +1034,15 @@ class GameTranslator:
         if input_apk:
             stem = f"{Path(input_apk).stem}_{self.target_lang}"
         output_apk = os.path.join(self.output_dir, f"{stem}.apk")
+        if input_apk:
+            # Never overwrite the input: a game already named
+            # <stem>_<lang>.apk would otherwise be destroyed by its own build.
+            counter = 0
+            while os.path.realpath(output_apk) == os.path.realpath(input_apk):
+                counter += 1
+                output_apk = os.path.join(self.output_dir, f"{stem}_{counter}.apk")
+            if counter:
+                self.log(f"! Output name collided with input; using {os.path.basename(output_apk)}")
 
         cmd = ["java", "-jar", self.tools["apktool"], "b", self.decompiled_dir, "-o", output_apk]
         self.log(f"Running: {' '.join(cmd)}")
@@ -991,10 +1115,18 @@ class GameTranslator:
             return ""
 
         self._out()
-        keystore_path = os.path.join(self.output_dir, "debug.keystore")
-        if not os.path.exists(keystore_path) and not self._create_debug_keystore(keystore_path):
+        # A user-supplied keystore wins; the debug keystore is only a fallback.
+        # (The old code unconditionally overwrote self.keystore_path here,
+        # silently discarding --keystore/--ks-alias.)
+        keystore_path = self.keystore_path
+        if not keystore_path:
+            keystore_path = os.path.join(self.output_dir, "debug.keystore")
+            if not os.path.exists(keystore_path) and not self._create_debug_keystore(keystore_path):
+                return ""
+            self.keystore_path = keystore_path
+        elif not os.path.isfile(keystore_path):
+            self.log(f"Error: keystore not found: {keystore_path}")
             return ""
-        self.keystore_path = keystore_path
 
         working = apk_path
 
@@ -1336,7 +1468,8 @@ class GameTranslator:
 
         return problems
 
-    def run_full_pipeline(self, apk_path: str, output_dir: Optional[str] = None) -> Dict:
+    def run_full_pipeline(self, apk_path: str, output_dir: Optional[str] = None,
+                          translate_all: bool = False) -> Dict:
         """Run complete translation pipeline."""
         results: Dict = {
             "success": False,
@@ -1373,7 +1506,7 @@ class GameTranslator:
                 return results
 
             # Step 3: Translate
-            translated = self.translate_strings(original_strings)
+            translated = self.translate_strings(original_strings, translate_all=translate_all)
 
             # Step 4: Patch
             if not self.patch_strings(original_strings, translated):

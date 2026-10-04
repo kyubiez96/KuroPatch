@@ -106,7 +106,18 @@ def run_dry_run(engine: GameTranslator, apk_path: str, output_dir: str,
     if not strings:
         return 2
     if translate_all:
-        print("[!] --translate-all with --dry-run only lists; nothing is translated.")
+        # --translate-all with --dry-run: translate (with skip heuristics off)
+        # and report, but build nothing.
+        print("[*] --translate-all: translating for preview (nothing will be built).")
+        translated = engine.translate_strings(strings, translate_all=True)
+        produced = sum(1 for k, v in translated.items() if v != strings[k])
+        preview = os.path.join(where, "translated_preview.txt")
+        os.makedirs(where, exist_ok=True)
+        with open(preview, "w", encoding="utf-8") as handle:
+            for key in sorted(translated):
+                if translated[key] != strings[key]:
+                    handle.write(f"{strings[key]} => {translated[key]}\n")
+        print(f"[*] {produced} strings would be translated; preview: {preview}")
     return 0
 
 
@@ -127,6 +138,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     engine = GameTranslator(keep_workspace=args.keep_workspace)
     engine.source_lang = args.source
     engine.target_lang = args.target
+    engine.provider_name = provider
     engine.workers = max(1, args.workers)
     engine.max_retries = max(1, args.retries)
     if args.api_key:
@@ -164,7 +176,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.dry_run:
             return run_dry_run(engine, args.apk, output_dir, args.report_dir, args.translate_all)
 
-        result = engine.run_full_pipeline(args.apk, output_dir)
+        result = engine.run_full_pipeline(args.apk, output_dir,
+                                          translate_all=args.translate_all)
         if args.report_dir and result.get("report"):
             import shutil
 

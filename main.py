@@ -268,7 +268,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         changed_files = 0
         translations: Dict[str, str] = {}
         for value, result in results.items():
-            if result.status == "done" and result.translated != value:
+            # "cached" is a produced translation, not a miss.
+            if result.status in ("done", "cached") and result.translated != value:
                 translations[value] = result.translated
 
         for path, props in prop_files:

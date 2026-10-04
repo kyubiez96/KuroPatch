@@ -598,10 +598,25 @@ class JarPatcher:
 
         ordered: List[zipfile.ZipInfo] = list(self._infos)
 
-        # META-INF/MANIFEST.MF must come first for the JAR spec to hold.
-        manifest = [i for i in ordered if i.filename.upper() == "META-INF/MANIFEST.MF"]
-        if manifest:
-            ordered = manifest + [i for i in ordered if i.filename.upper() != "META-INF/MANIFEST.MF"]
+        # A patched JAR must never ship the original's signatures: the .SF/.RSA
+        # digests no longer match the modified entries, so the archive would
+        # fail verification (or worse, look signed while it is not).
+        # MANIFEST.MF goes too — its per-file hashes are stale after patching.
+        # The output is intentionally UNSIGNED; re-sign with jarsigner if the
+        # game requires a signature.
+        def _is_signature(name: str) -> bool:
+            upper = name.upper()
+            return upper.startswith("META-INF/") and (
+                upper == "META-INF/MANIFEST.MF"
+                or upper.endswith((".SF", ".RSA", ".DSA", ".EC"))
+            )
+
+        stripped = [i for i in ordered if _is_signature(i.filename)]
+        if stripped:
+            print(f"[*] Stripping {len(stripped)} stale signature entries "
+                  f"(output will be unsigned): {', '.join(i.filename for i in stripped[:4])}"
+                  f"{'...' if len(stripped) > 4 else ''}")
+        ordered = [i for i in ordered if not _is_signature(i.filename)]
 
         with zipfile.ZipFile(self.jar_path, "r") as source, zipfile.ZipFile(
             output_path, "w", compression=zipfile.ZIP_DEFLATED
