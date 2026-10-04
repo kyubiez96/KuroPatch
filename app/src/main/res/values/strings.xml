@@ -37,6 +37,12 @@
     <string name="start">Start patching</string>
     <string name="section_output">3. Output</string>
     <string name="no_output">No output yet</string>
+    <string name="output_folder">Output folder</string>
+    <string name="output_folder_default">App folder (default)</string>
+    <string name="change">Change</string>
+    <string name="reset">Reset</string>
+    <string name="saved_to_folder">Saved to %1$s</string>
+    <string name="copy_failed_kept">Copy to custom folder failed; kept in app folder.</string>
     <string name="share_output">Share output</string>
 
     <string name="apk_not_supported_title">APK needs a PC</string>

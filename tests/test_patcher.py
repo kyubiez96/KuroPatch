@@ -159,15 +159,21 @@ def test_extract_then_rebuild_preserves_order_and_bytes(sample_jar, tmp_path):
     patcher.close()
 
     with zipfile.ZipFile(sample_jar) as before, zipfile.ZipFile(out) as after:
-        # Stale signatures are stripped on rebuild (the output is unsigned);
-        # everything else keeps its order and bytes.
-        stripped = {"META-INF/MANIFEST.MF"}
+        # Stale signature files are stripped on rebuild (the output is
+        # unsigned); MANIFEST.MF is kept (sanitised) so J2ME loaders still
+        # recognise the game. Everything else keeps order and bytes.
+        stripped = {
+            name
+            for name in before.namelist()
+            if name.upper().startswith("META-INF/")
+            and name.upper().endswith((".SF", ".RSA", ".DSA", ".EC"))
+        }
         assert [i.filename for i in after.infolist()] == [
             i.filename for i in before.infolist() if i.filename not in stripped
         ]
         assert after.read("classes.dex") == before.read("classes.dex")
         assert after.read("assets/data.bin") == before.read("assets/data.bin")
-        assert "META-INF/MANIFEST.MF" not in after.namelist()
+        assert "META-INF/MANIFEST.MF" in after.namelist()
         # the previous version stored everything uncompressed
         assert all(i.compress_type == zipfile.ZIP_DEFLATED for i in after.infolist())
 
@@ -290,3 +296,50 @@ def test_malformed_class_never_raises():
     assert list(iter_class_strings(b"not a class")) == []
     assert list(iter_class_strings(b"\xca\xfe\xba\xbe\x00")) == []
     assert patch_class_strings(b"\xca\xfe\xba\xbe", {"a": "b"}) == (b"\xca\xfe\xba\xbe", 0)
+
+
+# ---------------------------------------------------------------------------
+# MANIFEST.MF: kept (sanitised) so J2ME loaders accept the patched JAR
+# ---------------------------------------------------------------------------
+def test_manifest_kept_but_sanitized_on_rebuild(tmp_path):
+    """Regression: an earlier build stripped MANIFEST.MF entirely, producing
+    JARs that J2ME Loader rejected ("JAR not have META-INF/MANIFEST.MF").
+    The manifest must survive with its MIDlet-* attributes, minus stale
+    digest sections; .SF/.RSA signature files must still go."""
+    from patcher import _sanitize_manifest
+
+    raw = (
+        "Manifest-Version: 1.0\r\n"
+        "MIDlet-Name: Miami Nights 2\r\n"
+        "MIDlet-Vendor: Gameloft\r\n"
+        "MicroEdition-Profile: MIDP-2.0\r\n"
+        "SHA-256-Digest-Manifest: abcdef\r\n"
+        " wrapped-digest\r\n"
+        "\r\n"
+        "Name: com/game/Main.class\r\n"
+        "SHA-256-Digest: deadbeef\r\n"
+        "\r\n"
+    ).encode()
+    out = _sanitize_manifest(raw).decode()
+    assert "MIDlet-Name: Miami Nights 2" in out
+    assert "MicroEdition-Profile: MIDP-2.0" in out
+    assert not any(line.startswith("Name:") for line in out.splitlines())
+    assert "Digest" not in out
+
+    src = tmp_path / "in.jar"
+    with zipfile.ZipFile(src, "w") as archive:
+        archive.writestr("META-INF/MANIFEST.MF", raw)
+        archive.writestr("META-INF/GAME.SF", b"sig")
+        archive.writestr("META-INF/GAME.RSA", b"sig")
+        archive.writestr("a/b.class", b"\xca\xfe\xba\xbe" + b"\x00" * 32)
+    patcher = JarPatcher(str(src), workspace=str(tmp_path / "work"))
+    patcher.extract()
+    out_jar = str(tmp_path / "out.jar")
+    patcher.rebuild(out_jar)
+    with zipfile.ZipFile(out_jar) as archive:
+        names = archive.namelist()
+        assert "META-INF/MANIFEST.MF" in names
+        assert not any(n.endswith((".SF", ".RSA")) for n in names)
+        manifest = archive.read("META-INF/MANIFEST.MF").decode()
+        assert "MIDlet-Name" in manifest
+        assert "Digest" not in manifest

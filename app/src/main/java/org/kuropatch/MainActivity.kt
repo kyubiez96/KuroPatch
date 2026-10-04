@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.text.method.ScrollingMovementMethod
 import android.view.LayoutInflater
@@ -41,6 +42,12 @@ import kotlin.concurrent.thread
  */
 class MainActivity : AppCompatActivity() {
 
+    companion object {
+        private const val PREFS_NAME = "kuropatch_prefs"
+        private const val KEY_OUT_TREE = "output_tree_uri"
+        private const val KEY_OUT_NAME = "output_tree_name"
+    }
+
     data class QueueItem(val file: File, var status: String = "queued")
 
     // -- views -----------------------------------------------------------------
@@ -61,6 +68,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvLog: TextView
     private lateinit var tvOutput: TextView
     private lateinit var btnShare: Button
+    private lateinit var tvOutFolder: TextView
+    private lateinit var btnChangeFolder: Button
+    private lateinit var btnResetFolder: Button
 
     // -- state -----------------------------------------------------------------
     private val queue = mutableListOf<QueueItem>()
@@ -102,7 +112,91 @@ class MainActivity : AppCompatActivity() {
         "Dry run — list strings only" to "none",
     )
 
+    // -- output folder (SAF tree, user-configurable) -------------------------------
+    private val prefs by lazy { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
+
+    private fun outputTreeUri(): Uri? =
+        prefs.getString(KEY_OUT_TREE, null)?.let { Uri.parse(it) }
+
+    private fun treeDisplayName(treeUri: Uri): String? = try {
+        val docId = DocumentsContract.getTreeDocumentId(treeUri)
+        val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+        contentResolver.query(
+            docUri,
+            arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            null, null, null,
+        )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun refreshOutputFolder() {
+        val custom = prefs.getString(KEY_OUT_NAME, null)
+        tvOutFolder.text = custom ?: getString(R.string.output_folder_default)
+        btnResetFolder.isEnabled = custom != null
+    }
+
+    private fun resetOutputFolder() {
+        outputTreeUri()?.let { uri ->
+            try {
+                contentResolver.releasePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            } catch (e: Exception) {
+                // Permission already gone; nothing to release.
+            }
+        }
+        prefs.edit().remove(KEY_OUT_TREE).remove(KEY_OUT_NAME).apply()
+        refreshOutputFolder()
+        appendLog("[*] Output folder reset to default")
+    }
+
+    /**
+     * Copy a finished output file into the user-chosen folder (SAF tree).
+     * Worker-thread safe: touches no views. Returns the display label, or
+     * null when no custom folder is set or the copy failed (the caller then
+     * keeps the app-folder copy).
+     */
+    private fun copyToCustomFolder(src: File): String? {
+        val treeUri = outputTreeUri() ?: return null
+        return try {
+            val docId = DocumentsContract.getTreeDocumentId(treeUri)
+            val dirUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+            val newUri = DocumentsContract.createDocument(
+                contentResolver, dirUri, "application/java-archive", src.name,
+            ) ?: throw IllegalStateException("createDocument returned null")
+            contentResolver.openOutputStream(newUri)?.use { out ->
+                src.inputStream().use { inp -> inp.copyTo(out) }
+            } ?: throw IllegalStateException("cannot open output stream")
+            val folder = prefs.getString(KEY_OUT_NAME, null) ?: "folder"
+            "$folder/${src.name}"
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     // -- pickers -----------------------------------------------------------------
+    private val pickOutputTree =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
+            if (uri == null) return@registerForActivityResult
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+                val name = treeDisplayName(uri) ?: uri.lastPathSegment.orEmpty()
+                prefs.edit()
+                    .putString(KEY_OUT_TREE, uri.toString())
+                    .putString(KEY_OUT_NAME, name)
+                    .apply()
+                appendLog("[*] Output folder: $name")
+            } catch (e: Exception) {
+                Toast.makeText(this, "Cannot use that folder: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+            refreshOutputFolder()
+        }
+
     private val pickJars = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
         if (uris.isEmpty()) return@registerForActivityResult
         var added = 0
@@ -169,6 +263,10 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.tvLog)
         tvOutput = findViewById(R.id.tvOutput)
         btnShare = findViewById(R.id.btnShare)
+        tvOutFolder = findViewById(R.id.tvOutFolder)
+        btnChangeFolder = findViewById(R.id.btnChangeFolder)
+        btnResetFolder = findViewById(R.id.btnResetFolder)
+        refreshOutputFolder()
 
         tvLog.movementMethod = ScrollingMovementMethod()
 
@@ -198,6 +296,8 @@ class MainActivity : AppCompatActivity() {
         btnStop.setOnClickListener { cancelled = true }
         btnHistory.setOnClickListener { showHistory() }
         btnShare.setOnClickListener { shareOutput() }
+        btnChangeFolder.setOnClickListener { pickOutputTree.launch(null) }
+        btnResetFolder.setOnClickListener { resetOutputFolder() }
         refreshButtons()
     }
 
@@ -324,9 +424,23 @@ class MainActivity : AppCompatActivity() {
                                     outputPath = lastOutput,
                                 ),
                             )
+                            // Copy into the user-chosen folder (if any) on the
+                            // worker thread; UI updates stay on the main thread.
+                            val localFile = File(lastOutput).takeIf { it.isFile }
+                            val copiedLabel = localFile?.let { copyToCustomFolder(it) }
+                            val customSet = outputTreeUri() != null
                             runOnUiThread {
-                                outputFile = File(lastOutput).takeIf { it.isFile }
-                                tvOutput.text = lastOutput
+                                outputFile = localFile
+                                if (copiedLabel != null) {
+                                    tvOutput.text =
+                                        getString(R.string.saved_to_folder, copiedLabel)
+                                    appendLog("[✓] ${getString(R.string.saved_to_folder, copiedLabel)}")
+                                } else {
+                                    tvOutput.text = lastOutput
+                                    if (customSet) {
+                                        appendLog("[!] ${getString(R.string.copy_failed_kept)}")
+                                    }
+                                }
                                 btnShare.isEnabled = outputFile != null
                             }
                         }

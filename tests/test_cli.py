@@ -39,8 +39,10 @@ def test_end_to_end_patches_properties_and_smali(cli, sample_jar, tmp_path):
         props = archive.read("res/strings.properties").decode("iso-8859-1")
         smali = archive.read("com/game/Main.smali").decode("utf-8")
         assert archive.read("classes.dex") == bytes(range(256))
-        # Stale signatures are stripped on rebuild; the output is unsigned.
-        assert "META-INF/MANIFEST.MF" not in archive.namelist()
+        # Stale signature files are stripped on rebuild (output is unsigned),
+        # but MANIFEST.MF is kept so J2ME loaders recognise the game.
+        assert "META-INF/MANIFEST.MF" in archive.namelist()
+        assert "Main-Class" in archive.read("META-INF/MANIFEST.MF").decode()
         assert archive.testzip() is None
 
     assert "menu.start=Mulai Game" in props

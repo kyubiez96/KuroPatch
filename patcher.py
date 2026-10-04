@@ -635,6 +635,43 @@ def patch_class_strings(data: bytes, mapping: Dict[str, str]) -> Tuple[bytes, in
 # ---------------------------------------------------------------------------
 # Archive patching
 # ---------------------------------------------------------------------------
+def _sanitize_manifest(data: bytes) -> bytes:
+    """Keep ``MANIFEST.MF`` loadable but unsigned.
+
+    Drops every per-entry ``Name:`` section (its digests no longer match the
+    patched files) and any ``*-Digest`` attributes from the main section,
+    including their wrapped continuation lines. The ``MIDlet-*`` /
+    ``MicroEdition-*`` attributes that J2ME loaders need to recognise the
+    game are preserved — stripping the whole manifest produced JARs that
+    J2ME Loader refused to open ("JAR not have META-INF/MANIFEST.MF").
+    """
+    text = data.decode("utf-8", errors="replace")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    out_sections: List[List[str]] = []
+    for section in text.split("\n\n"):
+        lines = section.split("\n")
+        if not lines or not lines[0].strip():
+            continue
+        if lines[0].startswith("Name:"):
+            continue  # per-entry digests: stale after patching
+        cleaned: List[str] = []
+        skip_continuation = False
+        for line in lines:
+            if re.match(r"^[A-Za-z0-9-]+-Digest\b", line):
+                skip_continuation = True  # + its wrapped continuation lines
+                continue
+            if skip_continuation and line.startswith(" "):
+                continue
+            skip_continuation = False
+            cleaned.append(line)
+        while cleaned and not cleaned[-1].strip():
+            cleaned.pop()
+        if cleaned:
+            out_sections.append(cleaned)
+    body = "\r\n\r\n".join("\r\n".join(sec) for sec in out_sections)
+    return (body + "\r\n").encode("utf-8")
+
+
 class JarPatcher:
     """Extract, modify and rebuild a ``.jar``/``.apk`` archive."""
 
@@ -755,14 +792,14 @@ class JarPatcher:
         # A patched JAR must never ship the original's signatures: the .SF/.RSA
         # digests no longer match the modified entries, so the archive would
         # fail verification (or worse, look signed while it is not).
-        # MANIFEST.MF goes too — its per-file hashes are stale after patching.
+        # MANIFEST.MF itself is KEPT (sanitised): J2ME loaders need it to
+        # recognise the game. Only its stale digest sections are dropped.
         # The output is intentionally UNSIGNED; re-sign with jarsigner if the
         # game requires a signature.
         def _is_signature(name: str) -> bool:
             upper = name.upper()
-            return upper.startswith("META-INF/") and (
-                upper == "META-INF/MANIFEST.MF"
-                or upper.endswith((".SF", ".RSA", ".DSA", ".EC"))
+            return upper.startswith("META-INF/") and upper.endswith(
+                (".SF", ".RSA", ".DSA", ".EC")
             )
 
         stripped = [i for i in ordered if _is_signature(i.filename)]
@@ -790,6 +827,8 @@ class JarPatcher:
                 new_info.internal_attr = info.internal_attr
                 new_info.create_system = info.create_system
                 new_info.comment = info.comment
+                if name.upper() == "META-INF/MANIFEST.MF":
+                    data = _sanitize_manifest(data)
                 target.writestr(new_info, data)
 
         print(f"[*] Done! Saved as {output_path}")
