@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/subtitle"
+            android:textSize="13sp" />
+
+        <!-- Input file -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="@string/section_input"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnPick"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/pick_jar" />
+
+        <TextView
+            android:id="@+id/tvFile"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/no_file"
+            android:textSize="13sp" />
+
+        <!-- Options -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="@string/section_options"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/source_lang" />
+
+        <Spinner
+            android:id="@+id/spinnerSource"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/target_lang" />
+
+        <Spinner
+            android:id="@+id/spinnerTarget"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/provider" />
+
+        <Spinner
+            android:id="@+id/spinnerProvider"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/apiKeyLayout"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="@string/api_key_hint"
+            android:visibility="gone">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etApiKey"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textPassword" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <CheckBox
+            android:id="@+id/cbTranslateAll"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/translate_all" />
+
+        <Button
+            android:id="@+id/btnStart"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:enabled="false"
+            android:text="@string/start" />
+
+        <!-- Progress -->
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="@string/status_ready"
+            android:textSize="13sp" />
+
+        <ProgressBar
+            android:id="@+id/progressBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:max="100"
+            android:progress="0" />
+
+        <TextView
+            android:id="@+id/tvLog"
+            android:layout_width="match_parent"
+            android:layout_height="180dp"
+            android:layout_marginTop="8dp"
+            android:background="#1E1E1E"
+            android:fontFamily="monospace"
+            android:padding="8dp"
+            android:scrollbars="vertical"
+            android:textColor="#E1E1E1"
+            android:textSize="11sp" />
+
+        <!-- Output -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="@string/section_output"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvOutput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/no_output"
+            android:textIsSelectable="true"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/btnShare"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:enabled="false"
+            android:text="@string/share_output" />
+    </LinearLayout>
+</ScrollView>

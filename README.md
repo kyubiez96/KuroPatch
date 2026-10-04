@@ -98,13 +98,35 @@ The patcher is written to be non-destructive:
 
 ## Android app
 
-The `app/` module is a thin Android shell. It is built and published by
-GitHub Actions — nothing needs to be built locally:
+The `app/` module is a real on-device patcher for `.jar` game archives. It is
+built and published by GitHub Actions — nothing needs to be built locally:
 
 * every push and pull request runs the Python test suite, then
   `assembleDebug assembleRelease`
 * artifacts land in the workflow run
 * pushing a `v*` tag publishes a GitHub Release with the signed APK
+
+What the app does:
+
+1. **Load .jar** — picks a game archive through the system file picker and
+   stages it in private storage.
+2. **Options** — source/target language, translation provider, optional API
+   key, and a "translate everything" toggle.
+3. **Start patching** — runs the same Python engine as the CLI
+   (`patcher.py` + `translator.py` + `main.py`, embedded via Chaquopy) on a
+   background thread, with live progress, a log view, and the output path.
+4. **Output** — the patched archive lands in
+   `<app-external-files>/KuroPatch/` and can be shared to other apps.
+
+`.apk` files are refused with an explanation: the full APK pipeline needs
+apktool, which requires a real JVM and cannot run on Android. For APKs use the
+PC CLI (`python apk.py`).
+
+Build note: the `syncPythonEngine` Gradle task copies the repo-root engine
+(`patcher.py`, `translator.py`, `core.py`, `main.py`, `ui.py`) into
+`app/src/main/python/` before every build, so the APK always embeds the
+current engine. Those copies are git-ignored; `android_bridge.py` is the
+committed Chaquopy entry point.
 
 ## Tests
 

@@ -1,6 +1,9 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
+    // Embeds the KuroPatch Python engine (patcher.py, translator.py, main.py)
+    // so .jar patching runs on-device. See the syncPythonEngine task below.
+    id 'com.chaquopy.python'
 }
 
 android {
@@ -11,8 +14,8 @@ android {
         applicationId "org.kuropatch"
         minSdk 21
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.2.0"
     }
 
     buildTypes {
@@ -61,4 +64,48 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+}
+
+// ---------------------------------------------------------------------------
+// Chaquopy: Python engine on-device
+// ---------------------------------------------------------------------------
+chaquopy {
+    defaultConfig {
+        // CPython version bundled per ABI.
+        version "3.11"
+        pip {
+            // Same runtime deps as requirements.txt (deep-translator drives the
+            // default google-web provider; tqdm is optional but harmless).
+            install "deep-translator>=1.11.4,<2.0.0"
+            install "tqdm>=4.66.0"
+        }
+    }
+}
+
+// The Python engine lives at the repository root (patcher.py, translator.py,
+// main.py, ui.py, core.py) as the single source of truth. Copy it into the
+// module's Python source set before every build so the APK always embeds the
+// current engine. android_bridge.py (the Chaquopy entry point) is committed
+// directly under src/main/python and is NOT overwritten here.
+tasks.register("syncPythonEngine") {
+    def engineFiles = ["patcher.py", "translator.py", "core.py", "main.py", "ui.py"]
+    def pythonDir = file("src/main/python")
+    // Skip the up-to-date check: cheap copy, and it must reflect the latest
+    // root sources even when Gradle thinks nothing changed.
+    outputs.upToDateWhen { false }
+    doLast {
+        engineFiles.each { name ->
+            delete("$pythonDir/$name")
+        }
+        copy {
+            from(rootDir) {
+                include(engineFiles)
+            }
+            into(pythonDir)
+        }
+        logger.lifecycle("Synced Python engine into ${pythonDir}")
+    }
+}
+tasks.named("preBuild").configure {
+    dependsOn("syncPythonEngine")
 }

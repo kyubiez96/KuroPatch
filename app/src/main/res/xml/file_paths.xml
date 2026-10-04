@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Patched archives live under <external-files>/KuroPatch/. -->
+    <external-files-path name="output" path="KuroPatch/" />
+    <!-- Staging dir for the picked input file. -->
+    <files-path name="input" path="input/" />
+</paths>

@@ -16,6 +16,14 @@ translated_strings.txt
 *.keystore
 game_translator_*/
 
+# Synced into the APK at build time by the syncPythonEngine Gradle task.
+# The repo-root .py files are the source of truth; these copies are generated.
+app/src/main/python/patcher.py
+app/src/main/python/translator.py
+app/src/main/python/core.py
+app/src/main/python/main.py
+app/src/main/python/ui.py
+
 # Android / Gradle
 .gradle/
 build/
