@@ -9,13 +9,13 @@ pluginManagement {
         }
         mavenCentral()
         gradlePluginPortal()
-        // Chaquopy (Python on Android) plugin + runtime artefacts.
-        maven { url "https://chaquopy.com/maven" }
+        // Chaquopy 17+ (com.chaquo.python) is published on the Gradle Plugin
+        // Portal; no custom repository is needed.
     }
     plugins {
         id 'com.android.application' version '8.1.4'
         id 'org.jetbrains.kotlin.android' version '1.9.22'
-        id 'com.chaquopy.python' version '15.0.1'
+        id 'com.chaquo.python' version '17.0.0'
     }
 }
 
@@ -24,8 +24,6 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // Chaquopy runtime artefacts (per-ABI Python stdlib etc.).
-        maven { url "https://chaquopy.com/maven" }
     }
 }
 

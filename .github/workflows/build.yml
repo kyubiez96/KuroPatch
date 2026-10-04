@@ -75,6 +75,13 @@ jobs:
         with:
           gradle-version: '8.2'
 
+      # Chaquopy's pip step needs a build Python whose major.minor matches the
+      # app's Python (chaquopy.version "3.11" in app/build.gradle).
+      - name: Set up Python 3.11 (Chaquopy buildPython)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Build with Gradle
         run: gradle assembleDebug assembleRelease --stacktrace
 
