@@ -10,13 +10,44 @@ android {
     namespace 'org.kuropatch'
     compileSdk 34
 
+    // Version follows the release tag: v1.4.3 -> versionName "1.4.3".
+    // (Semantic versioning: patch = last number, minor = middle, major = first.)
+    // Non-tag builds (main branch) report "dev". versionCode is the commit
+    // count, so it always increases.
+    def gitTagVersion = {
+        try {
+            def stdout = new ByteArrayOutputStream()
+            exec {
+                commandLine "git", "describe", "--tags", "--exact-match", "--match", "v*"
+                standardOutput = stdout
+                ignoreExitValue = true
+            }
+            def tag = stdout.toString().trim()
+            if (tag.startsWith("v")) return tag.substring(1)
+        } catch (Exception ignored) { }
+        return "dev"
+    }
+    def gitCommitCount = {
+        try {
+            def stdout = new ByteArrayOutputStream()
+            exec {
+                commandLine "git", "rev-list", "--count", "HEAD"
+                standardOutput = stdout
+                ignoreExitValue = true
+            }
+            def count = stdout.toString().trim()
+            if (count.isInteger()) return count.toInteger()
+        } catch (Exception ignored) { }
+        return 1
+    }
+
     defaultConfig {
         applicationId "org.kuropatch"
         // Chaquopy 16+ requires minSdk 24.
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName "1.2.0"
+        versionCode gitCommitCount()
+        versionName gitTagVersion()
 
         // The Python interpreter is native: Chaquopy requires abiFilters.
         // 64-bit only (Python 3.12+ drops 32-bit; staying 64-bit keeps the

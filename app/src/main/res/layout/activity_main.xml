@@ -203,5 +203,13 @@
             android:layout_marginTop="6dp"
             android:enabled="false"
             android:text="@string/share_output" />
+
+        <TextView
+            android:id="@+id/tvVersion"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:gravity="center"
+            android:textSize="11sp" />
     </LinearLayout>
 </ScrollView>
