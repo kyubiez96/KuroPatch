@@ -130,7 +130,7 @@ chaquopy {
 // current engine. android_bridge.py (the Chaquopy entry point) is committed
 // directly under src/main/python and is NOT overwritten here.
 tasks.register("syncPythonEngine") {
-    def engineFiles = ["patcher.py", "translator.py", "core.py", "main.py", "ui.py"]
+    def engineFiles = ["patcher.py", "translator.py", "core.py", "main.py", "ui.py", "stringpacks.py"]
     def pythonDir = file("src/main/python")
     // Skip the up-to-date check: cheap copy, and it must reflect the latest
     // root sources even when Gradle thinks nothing changed.
