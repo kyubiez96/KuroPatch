@@ -1,6 +1,7 @@
 package org.kuropatch
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -46,6 +47,40 @@ class MainActivity : AppCompatActivity() {
         private const val PREFS_NAME = "kuropatch_prefs"
         private const val KEY_OUT_TREE = "output_tree_uri"
         private const val KEY_OUT_NAME = "output_tree_name"
+        private const val KEY_IN_TREE = "input_tree_uri"
+        private const val KEY_IN_NAME = "input_tree_name"
+    }
+
+    /**
+     * Like OpenMultipleDocuments, but opens the system picker inside the
+     * user's chosen input folder when one is set.
+     */
+    private class PickJarsAtFolder : ActivityResultContract<Uri?, List<Uri>>() {
+        override fun createIntent(context: Context, input: Uri?): Intent =
+            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(
+                    Intent.EXTRA_MIME_TYPES,
+                    arrayOf("application/java-archive", "application/octet-stream"),
+                )
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                if (input != null) {
+                    putExtra(DocumentsContract.EXTRA_INITIAL_URI, input)
+                }
+            }
+
+        override fun parseResult(resultCode: Int, intent: Intent?): List<Uri> {
+            if (resultCode != Activity.RESULT_OK || intent == null) return emptyList()
+            val uris = mutableListOf<Uri>()
+            val clip = intent.clipData
+            if (clip != null) {
+                for (i in 0 until clip.itemCount) uris.add(clip.getItemAt(i).uri)
+            } else {
+                intent.data?.let { uris.add(it) }
+            }
+            return uris
+        }
     }
 
     data class QueueItem(val file: File, var status: String = "queued")
@@ -71,6 +106,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvOutFolder: TextView
     private lateinit var btnChangeFolder: Button
     private lateinit var btnResetFolder: Button
+    private lateinit var tvInFolder: TextView
+    private lateinit var btnChangeInput: Button
+    private lateinit var btnResetInput: Button
 
     // -- state -----------------------------------------------------------------
     private val queue = mutableListOf<QueueItem>()
@@ -133,7 +171,7 @@ class MainActivity : AppCompatActivity() {
     private fun refreshOutputFolder() {
         val custom = prefs.getString(KEY_OUT_NAME, null)
         tvOutFolder.text = custom ?: getString(R.string.output_folder_default)
-        btnResetFolder.isEnabled = custom != null
+        btnResetFolder.isEnabled = !running && custom != null
     }
 
     private fun resetOutputFolder() {
@@ -197,7 +235,52 @@ class MainActivity : AppCompatActivity() {
             refreshOutputFolder()
         }
 
-    private val pickJars = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
+    private val pickInputTree =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
+            if (uri == null) return@registerForActivityResult
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+                val name = treeDisplayName(uri) ?: uri.lastPathSegment.orEmpty()
+                prefs.edit()
+                    .putString(KEY_IN_TREE, uri.toString())
+                    .putString(KEY_IN_NAME, name)
+                    .apply()
+                appendLog("[*] Input folder: $name")
+            } catch (e: Exception) {
+                Toast.makeText(this, "Cannot use that folder: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+            refreshInputFolder()
+        }
+
+    private fun inputFolderUri(): Uri? =
+        prefs.getString(KEY_IN_TREE, null)?.let { Uri.parse(it) }
+
+    private fun refreshInputFolder() {
+        val custom = prefs.getString(KEY_IN_NAME, null)
+        tvInFolder.text = custom ?: getString(R.string.input_folder_default)
+        btnResetInput.isEnabled = !running && custom != null
+    }
+
+    private fun resetInputFolder() {
+        inputFolderUri()?.let { uri ->
+            try {
+                contentResolver.releasePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            } catch (e: Exception) {
+                // Permission already gone; nothing to release.
+            }
+        }
+        prefs.edit().remove(KEY_IN_TREE).remove(KEY_IN_NAME).apply()
+        refreshInputFolder()
+        appendLog("[*] Input folder reset to default")
+    }
+
+    private val pickJars = registerForActivityResult(PickJarsAtFolder()) { uris: List<Uri> ->
         if (uris.isEmpty()) return@registerForActivityResult
         var added = 0
         for (uri in uris) {
@@ -263,6 +346,10 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.tvLog)
         tvOutput = findViewById(R.id.tvOutput)
         btnShare = findViewById(R.id.btnShare)
+        tvInFolder = findViewById(R.id.tvInFolder)
+        btnChangeInput = findViewById(R.id.btnChangeInput)
+        btnResetInput = findViewById(R.id.btnResetInput)
+        refreshInputFolder()
         tvOutFolder = findViewById(R.id.tvOutFolder)
         btnChangeFolder = findViewById(R.id.btnChangeFolder)
         btnResetFolder = findViewById(R.id.btnResetFolder)
@@ -289,8 +376,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnPick.setOnClickListener {
-            pickJars.launch(arrayOf("application/java-archive", "application/octet-stream", "*/*"))
+            pickJars.launch(inputFolderUri())
         }
+        btnChangeInput.setOnClickListener { pickInputTree.launch(null) }
+        btnResetInput.setOnClickListener { resetInputFolder() }
         btnPreview.setOnClickListener { openPreview() }
         btnStart.setOnClickListener { startPatching() }
         btnStop.setOnClickListener { cancelled = true }
@@ -331,6 +420,10 @@ class MainActivity : AppCompatActivity() {
         btnPreview.isEnabled = idle && queue.size == 1
         btnHistory.isEnabled = idle
         btnStop.isEnabled = running
+        btnChangeInput.isEnabled = idle
+        btnChangeFolder.isEnabled = idle
+        refreshInputFolder()
+        refreshOutputFolder()
         queueAdapter.notifyDataSetChanged()
     }
 

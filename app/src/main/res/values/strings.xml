@@ -37,6 +37,8 @@
     <string name="start">Start patching</string>
     <string name="section_output">3. Output</string>
     <string name="no_output">No output yet</string>
+    <string name="input_folder">Input folder</string>
+    <string name="input_folder_default">File picker (system)</string>
     <string name="output_folder">Output folder</string>
     <string name="output_folder_default">App folder (default)</string>
     <string name="change">Change</string>
