@@ -489,6 +489,150 @@ def patch_smali_literals(content: str, mapping: Dict[str, str]) -> Tuple[str, in
 
 
 # ---------------------------------------------------------------------------
+# Java .class constant-pool strings
+# ---------------------------------------------------------------------------
+# J2ME games (the bulk of real-world .jar games) keep UI text as string
+# constants inside .class files — there are no .properties or .smali files.
+# Only CONSTANT_String entries (tag 8, the ones an `ldc` can actually load)
+# are translation candidates. A Utf8 that is *also* referenced as a class /
+# method / field name is left alone: the pool de-duplicates identical
+# strings, and translating a shared entry would rename code.
+def _mutf8_decode(data: bytes) -> str:
+    """Decode Java modified UTF-8 (``\\0`` as ``C0 80``, astral as surrogate pairs)."""
+    text = data.replace(b"\xc0\x80", b"\x00").decode("utf-8", "surrogatepass")
+    out: List[str] = []
+    i = 0
+    while i < len(text):
+        code = ord(text[i])
+        if 0xD800 <= code <= 0xDBFF and i + 1 < len(text):
+            low = ord(text[i + 1])
+            if 0xDC00 <= low <= 0xDFFF:
+                out.append(chr(0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)))
+                i += 2
+                continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def _mutf8_encode(text: str) -> bytes:
+    """Encode to Java modified UTF-8."""
+    out = bytearray()
+    for char in text:
+        code = ord(char)
+        if code == 0:
+            out += b"\xc0\x80"
+        elif code < 0x80:
+            out.append(code)
+        elif code < 0x800:
+            out.append(0xC0 | (code >> 6))
+            out.append(0x80 | (code & 0x3F))
+        elif code < 0x10000:
+            out.append(0xE0 | (code >> 12))
+            out.append(0x80 | ((code >> 6) & 0x3F))
+            out.append(0x80 | (code & 0x3F))
+        else:
+            code -= 0x10000
+            for surrogate in (0xD800 + (code >> 10), 0xDC00 + (code & 0x3FF)):
+                out.append(0xE0 | (surrogate >> 12))
+                out.append(0x80 | ((surrogate >> 6) & 0x3F))
+                out.append(0x80 | (surrogate & 0x3F))
+    return bytes(out)
+
+
+def _parse_constant_pool(data: bytes) -> Tuple[Dict[int, Tuple[int, str]], set]:
+    """Parse a .class constant pool.
+
+    Returns ``(utf8, string_only)`` where ``utf8`` maps a pool index to
+    ``(length_field_offset, decoded_string)`` and ``string_only`` is the set
+    of Utf8 indices referenced *only* by ``CONSTANT_String`` entries — safe
+    to translate.
+    """
+    if len(data) < 10 or data[:4] != b"\xca\xfe\xba\xbe":
+        raise ValueError("not a class file")
+    count = int.from_bytes(data[8:10], "big")
+    pos = 10
+    utf8: Dict[int, Tuple[int, str]] = {}
+    string_refs: set = set()
+    code_refs: set = set()  # Utf8 indices used as names/descriptors: never translate
+    index = 1
+    while index < count:
+        if pos >= len(data):
+            raise ValueError("truncated constant pool")
+        tag = data[pos]
+        if tag == 1:  # Utf8
+            length = int.from_bytes(data[pos + 1 : pos + 3], "big")
+            raw = data[pos + 3 : pos + 3 + length]
+            if len(raw) != length:
+                raise ValueError("truncated Utf8 entry")
+            utf8[index] = (pos + 1, _mutf8_decode(raw))
+            pos += 3 + length
+        elif tag == 8:  # String
+            string_refs.add(int.from_bytes(data[pos + 1 : pos + 3], "big"))
+            pos += 3
+        elif tag in (7, 16, 19, 20):  # Class, MethodType, Module, Package
+            code_refs.add(int.from_bytes(data[pos + 1 : pos + 3], "big"))
+            pos += 3
+        elif tag == 15:  # MethodHandle
+            pos += 4
+        elif tag in (3, 4, 9, 10, 11, 12, 17, 18):
+            code_refs.add(int.from_bytes(data[pos + 1 : pos + 3], "big"))
+            code_refs.add(int.from_bytes(data[pos + 3 : pos + 5], "big"))
+            pos += 5
+        elif tag in (5, 6):  # Long, Double: occupy two pool slots
+            pos += 9
+            index += 1
+        else:
+            raise ValueError(f"unknown constant pool tag {tag} at index {index}")
+        index += 1
+    return utf8, (string_refs - code_refs)
+
+
+def iter_class_strings(data: bytes):
+    """Yield ``(pool_index, decoded)`` for every loadable string constant.
+
+    Never raises: a malformed class yields nothing instead of killing the run.
+    """
+    try:
+        utf8, candidates = _parse_constant_pool(data)
+    except (ValueError, IndexError):
+        return
+    for idx in sorted(candidates):
+        entry = utf8.get(idx)
+        if entry is not None:
+            yield idx, entry[1]
+
+
+def patch_class_strings(data: bytes, mapping: Dict[str, str]) -> Tuple[bytes, int]:
+    """Replace string constants per ``mapping`` (decoded -> translation).
+
+    Returns ``(new_data, replaced)``. Only the Utf8 entry's own length prefix
+    changes, so no other pool offsets are disturbed. Malformed input is
+    returned unchanged.
+    """
+    try:
+        utf8, candidates = _parse_constant_pool(data)
+    except (ValueError, IndexError):
+        return data, 0
+    edits: List[Tuple[int, int, bytes]] = []
+    for idx in candidates:
+        entry = utf8.get(idx)
+        if entry is None:
+            continue
+        length_pos, decoded = entry
+        if decoded in mapping:
+            new_raw = _mutf8_encode(mapping[decoded])
+            old_len = int.from_bytes(data[length_pos : length_pos + 2], "big")
+            edits.append((length_pos, 2 + old_len, len(new_raw).to_bytes(2, "big") + new_raw))
+    if not edits:
+        return data, 0
+    out = bytearray(data)
+    for length_pos, old_total, new_entry in sorted(edits, reverse=True):
+        out[length_pos : length_pos + old_total] = new_entry
+    return bytes(out), len(edits)
+
+
+# ---------------------------------------------------------------------------
 # Archive patching
 # ---------------------------------------------------------------------------
 class JarPatcher:
@@ -545,6 +689,16 @@ class JarPatcher:
         for root, _dirs, filenames in os.walk(self.workspace):
             for filename in filenames:
                 if filename.endswith(".smali"):
+                    found.append(os.path.join(root, filename))
+        found.sort()
+        return found
+
+    def get_class_files(self) -> List[str]:
+        """Every ``.class`` file inside the workspace (J2ME game code)."""
+        found: List[str] = []
+        for root, _dirs, filenames in os.walk(self.workspace):
+            for filename in filenames:
+                if filename.endswith(".class"):
                     found.append(os.path.join(root, filename))
         found.sort()
         return found

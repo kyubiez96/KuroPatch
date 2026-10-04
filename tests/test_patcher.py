@@ -221,3 +221,72 @@ def test_stale_workspace_files_are_cleared_on_extract(tmp_path):
 def test_missing_archive_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         JarPatcher(str(tmp_path / "nope.jar"))
+
+
+# ---------------------------------------------------------------------------
+# .class constant-pool strings (J2ME games)
+# ---------------------------------------------------------------------------
+def _make_class(strings, extra_utf8=()):
+    """Minimal class file with the given CONSTANT_String entries."""
+    from patcher import _mutf8_encode
+
+    pool = b""
+    index = {}
+    for s in list(strings) + list(extra_utf8):
+        raw = _mutf8_encode(s)
+        pool += b"\x01" + len(raw).to_bytes(2, "big") + raw
+        index.setdefault(s, len(index) + 1)
+    for s in strings:
+        pool += b"\x08" + index[s].to_bytes(2, "big")
+    count = len(index) + len(strings) + 1
+    return b"\xca\xfe\xba\xbe\x00\x00\x00\x34" + count.to_bytes(2, "big") + pool + b"\x00" * 16
+
+
+def test_class_string_constants_are_collected():
+    from patcher import iter_class_strings
+
+    data = _make_class(["Start Game", "Quit"])
+    assert sorted(v for _, v in iter_class_strings(data)) == ["Quit", "Start Game"]
+
+
+def test_class_names_and_shared_entries_are_not_candidates():
+    """A Utf8 that doubles as a method name must never be translated."""
+    from patcher import _mutf8_encode, iter_class_strings
+
+    pool = b""
+    for s in ["Hello", "Start"]:
+        raw = _mutf8_encode(s)
+        pool += b"\x01" + len(raw).to_bytes(2, "big") + raw
+    pool += b"\x08" + (1).to_bytes(2, "big")  # String -> "Hello"
+    pool += b"\x08" + (2).to_bytes(2, "big")  # String -> "Start"
+    pool += b"\x0c" + (2).to_bytes(2, "big") + (2).to_bytes(2, "big")  # NameAndType -> "Start"
+    count = 6
+    data = b"\xca\xfe\xba\xbe\x00\x00\x00\x34" + count.to_bytes(2, "big") + pool + b"\x00" * 16
+    assert list(iter_class_strings(data)) == [(1, "Hello")]
+
+
+def test_patch_class_strings_round_trip():
+    from patcher import _parse_constant_pool, iter_class_strings, patch_class_strings
+
+    data = _make_class(["Start Game"])
+    new_data, replaced = patch_class_strings(data, {"Start Game": "Mulai Game"})
+    assert replaced == 1
+    assert list(iter_class_strings(new_data)) == [(1, "Mulai Game")]
+    # The pool must still parse after the splice.
+    utf8, _cands = _parse_constant_pool(new_data)
+    assert utf8[1][1] == "Mulai Game"
+
+
+def test_mutf8_round_trip():
+    from patcher import _mutf8_decode, _mutf8_encode
+
+    for s in ["Hello", "开始游戏", "a\x00b", "🎮", "café"]:
+        assert _mutf8_decode(_mutf8_encode(s)) == s
+
+
+def test_malformed_class_never_raises():
+    from patcher import iter_class_strings, patch_class_strings
+
+    assert list(iter_class_strings(b"not a class")) == []
+    assert list(iter_class_strings(b"\xca\xfe\xba\xbe\x00")) == []
+    assert patch_class_strings(b"\xca\xfe\xba\xbe", {"a": "b"}) == (b"\xca\xfe\xba\xbe", 0)

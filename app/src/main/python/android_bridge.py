@@ -31,8 +31,14 @@ import time
 import traceback
 from typing import Any, Dict, List, Optional
 
-from main import Collected, collect_from_properties, collect_from_smali, write_reports
-from patcher import JarPatcher, patch_smali_literals
+from main import (
+    Collected,
+    collect_from_classes,
+    collect_from_properties,
+    collect_from_smali,
+    write_reports,
+)
+from patcher import JarPatcher, patch_class_strings, patch_smali_literals
 from translator import TranslationResult, TranslatorEngine
 
 
@@ -74,10 +80,13 @@ def preview_strings(
         _emit(listener, "on_status", "extracting", "Collecting strings...")
         _prop_files, prop_strings = collect_from_properties(patcher, 3, translate_all)
         _smali_files, smali_strings = collect_from_smali(patcher, 3, translate_all)
+        _class_files, class_strings = collect_from_classes(patcher, 3, translate_all)
         origins: Dict[str, List[str]] = {}
         for value, where in prop_strings.origins.items():
             origins.setdefault(value, []).extend(where)
         for value, where in smali_strings.origins.items():
+            origins.setdefault(value, []).extend(where)
+        for value, where in class_strings.origins.items():
             origins.setdefault(value, []).extend(where)
         strings = [
             {"value": value, "origin": "; ".join(origins[value][:2])}
@@ -155,13 +164,14 @@ def run_patch(
         _emit(listener, "on_status", "extracting", "Collecting strings...")
         prop_files, prop_strings = collect_from_properties(patcher, 3, translate_all)
         smali_files, smali_strings = collect_from_smali(patcher, 3, translate_all)
-        pending = sorted(set(prop_strings.origins) | set(smali_strings.origins))
+        class_files, class_strings = collect_from_classes(patcher, 3, translate_all)
+        pending = sorted(set(prop_strings.origins) | set(smali_strings.origins) | set(class_strings.origins))
         total = len(pending)
         result["total"] = total
         _emit(
             listener, "on_log",
             f"[*] {len(prop_files)} properties files, {len(smali_files)} smali files, "
-            f"{total} translatable strings",
+            f"{len(class_files)} class files, {total} translatable strings",
         )
         if not pending:
             return fail("Nothing translatable found in this archive.")
@@ -253,9 +263,17 @@ def run_patch(
             if replaced and new_content != content:
                 patcher.write_bytes(path, new_content.encode("utf-8", errors="surrogateescape"))
                 smali_changed += replaced
+
+        class_changed = 0
+        for path, data in class_files:
+            new_data, replaced = patch_class_strings(data, translations)
+            if replaced and new_data != data:
+                patcher.write_bytes(path, new_data)
+                class_changed += replaced
         _emit(
             listener, "on_log",
-            f"[*] Rewrote {changed_files} properties files, {smali_changed} smali literals",
+            f"[*] Rewrote {changed_files} properties files, {smali_changed} smali literals, "
+            f"{class_changed} class string constants",
         )
 
         # -- reports ------------------------------------------------------
@@ -264,9 +282,10 @@ def run_patch(
             merged_origins[value] = (
                 list(prop_strings.origins.get(value, []))
                 + list(smali_strings.origins.get(value, []))
+                + list(class_strings.origins.get(value, []))
             )
         merged = Collected()
-        merged.total_seen = prop_strings.total_seen + smali_strings.total_seen
+        merged.total_seen = prop_strings.total_seen + smali_strings.total_seen + class_strings.total_seen
         merged.origins = merged_origins
         found_path, done_path = write_reports(report_dir, merged, results)
         _emit(listener, "on_log", f"[*] Reports: {found_path}, {done_path}")

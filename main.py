@@ -25,7 +25,13 @@ import time
 import zipfile
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from patcher import JarPatcher, PropertiesFile, patch_smali_literals
+from patcher import (
+    JarPatcher,
+    PropertiesFile,
+    iter_class_strings,
+    patch_class_strings,
+    patch_smali_literals,
+)
 from translator import (
     DEFAULT_SOURCE,
     DEFAULT_TARGET,
@@ -106,6 +112,30 @@ def collect_from_smali(patcher: JarPatcher, minimum: int, translate_all: bool = 
         rel = os.path.relpath(path, patcher.workspace)
         for _start, _end, decoded in iter_smali_literals(content):
             collected.add(decoded, f"{rel}::const-string", minimum, translate_all)
+
+    return files, collected
+
+
+def collect_from_classes(patcher: JarPatcher, minimum: int, translate_all: bool = False) -> Tuple[List[Tuple[str, bytes]], Collected]:
+    """Return ``[(path, data)]`` for every .class file, plus its string constants.
+
+    This is where J2ME games keep their UI text: the constant pool's
+    ``CONSTANT_String`` entries. Only pool entries used *purely* as string
+    constants are collected — class/method/field names are never touched.
+    """
+    files: List[Tuple[str, bytes]] = []
+    collected = Collected()
+
+    for path in patcher.get_class_files():
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read()
+        except OSError:
+            continue
+        files.append((path, data))
+        rel = os.path.relpath(path, patcher.workspace)
+        for index, decoded in iter_class_strings(data):
+            collected.add(decoded, f"{rel}::ldc#{index}", minimum, translate_all)
 
     return files, collected
 
@@ -212,17 +242,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"[*] {len(smali_files)} smali files, "
                   f"{len(smali_strings.origins)} translatable literals")
 
-        # One translation per distinct string, even when it appears 200 times.
-        pending = sorted(set(prop_strings.origins) | set(smali_strings.origins))
+        class_files, class_strings = collect_from_classes(patcher, args.min_length, args.translate_all)
+        print(f"[*] {len(class_files)} class files, "
+              f"{len(class_strings.origins)} translatable string constants")
 
-        # Merge provenance: the same string may live in both a properties file
-        # and smali, and the report should say where.
+        # One translation per distinct string, even when it appears 200 times.
+        pending = sorted(set(prop_strings.origins) | set(smali_strings.origins) | set(class_strings.origins))
+
+        # Merge provenance: the same string may live in several places,
+        # and the report should say where.
         merged = Collected()
-        merged.total_seen = prop_strings.total_seen + smali_strings.total_seen
+        merged.total_seen = prop_strings.total_seen + smali_strings.total_seen + class_strings.total_seen
         for value in pending:
             merged.origins[value] = (
                 list(prop_strings.origins.get(value, []))
                 + list(smali_strings.origins.get(value, []))
+                + list(class_strings.origins.get(value, []))
             )
 
         if not pending:
@@ -290,7 +325,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     patcher.write_bytes(path, new_content.encode("utf-8", errors="surrogateescape"))
                     smali_changed += replaced
 
-        print(f"[*] Rewrote {changed_files} properties files, {smali_changed} smali literals")
+        class_changed = 0
+        if class_files:
+            for path, data in class_files:
+                new_data, replaced = patch_class_strings(data, translations)
+                if replaced and new_data != data:
+                    patcher.write_bytes(path, new_data)
+                    class_changed += replaced
+
+        print(f"[*] Rewrote {changed_files} properties files, {smali_changed} smali literals, "
+              f"{class_changed} class string constants")
 
         found_path, done_path = write_reports(args.report_dir, merged, results)
         print(f"[*] Reports: {found_path}, {done_path}")
