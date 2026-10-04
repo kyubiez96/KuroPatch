@@ -198,8 +198,6 @@ class MainActivity : AppCompatActivity() {
         btnStop.setOnClickListener { cancelled = true }
         btnHistory.setOnClickListener { showHistory() }
         btnShare.setOnClickListener { shareOutput() }
-        findViewById<TextView>(R.id.tvVersion).text =
-            getString(R.string.app_version, BuildConfig.VERSION_NAME)
         refreshButtons()
     }
 

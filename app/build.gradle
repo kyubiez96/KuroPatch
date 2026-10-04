@@ -48,6 +48,8 @@ android {
         targetSdk 34
         versionCode gitCommitCount()
         versionName gitTagVersion()
+        // In-app version label (BuildConfig is disabled in this project).
+        resValue "string", "app_version_name", "v${gitTagVersion()}"
 
         // The Python interpreter is native: Chaquopy requires abiFilters.
         // 64-bit only (Python 3.12+ drops 32-bit; staying 64-bit keeps the
