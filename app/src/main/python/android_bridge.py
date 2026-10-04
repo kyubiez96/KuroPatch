@@ -25,6 +25,7 @@ Listener protocol (duck-typed; every method is optional):
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import traceback
@@ -49,6 +50,51 @@ def _emit(listener: Any, method: str, *args: Any) -> None:
         pass
 
 
+def preview_strings(
+    input_path: str,
+    translate_all: bool = False,
+    workspace_dir: Optional[str] = None,
+    listener: Any = None,
+) -> str:
+    """Extract translatable strings without translating anything.
+
+    Returns a JSON string: ``{"total": N, "strings": [{"value": ..., "origin": ...}]}``.
+    The UI shows this for review; the user's edits come back to :func:`run_patch`
+    as ``overrides_json``.
+    """
+    patcher: Optional[JarPatcher] = None
+    try:
+        if not input_path or not os.path.isfile(input_path):
+            return json.dumps({"total": 0, "strings": [], "error": f"No such file: {input_path}"})
+        if workspace_dir:
+            os.makedirs(workspace_dir, exist_ok=True)
+        _emit(listener, "on_status", "extracting", "Unpacking archive...")
+        patcher = JarPatcher(input_path, workspace=workspace_dir or "jar_workspace")
+        patcher.extract()
+        _emit(listener, "on_status", "extracting", "Collecting strings...")
+        _prop_files, prop_strings = collect_from_properties(patcher, 3, translate_all)
+        _smali_files, smali_strings = collect_from_smali(patcher, 3, translate_all)
+        origins: Dict[str, List[str]] = {}
+        for value, where in prop_strings.origins.items():
+            origins.setdefault(value, []).extend(where)
+        for value, where in smali_strings.origins.items():
+            origins.setdefault(value, []).extend(where)
+        strings = [
+            {"value": value, "origin": "; ".join(origins[value][:2])}
+            for value in sorted(origins)
+        ]
+        _emit(listener, "on_status", "done", f"{len(strings)} strings found")
+        return json.dumps({"total": len(strings), "strings": strings})
+    except Exception as exc:  # noqa: BLE001 - UI boundary, never raise to Java
+        return json.dumps({"total": 0, "strings": [], "error": f"{type(exc).__name__}: {exc}"})
+    finally:
+        if patcher is not None and not os.environ.get("KUROPATCH_KEEP_WORKSPACE"):
+            try:
+                patcher.close()
+            except Exception:
+                pass
+
+
 def run_patch(
     input_path: str,
     output_path: str,
@@ -61,6 +107,7 @@ def run_patch(
     dry_run: bool = False,
     workspace_dir: Optional[str] = None,
     listener: Any = None,
+    overrides_json: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the JAR localisation pipeline. Returns a result dict.
 
@@ -68,6 +115,10 @@ def run_patch(
     patch → report → rebuild) but reports through ``listener`` and never
     raises: failures are delivered via ``on_done(False, "", message)`` and the
     returned dict.
+
+    ``overrides_json`` is a JSON object mapping an original string to either a
+    user-supplied translation (used verbatim, no provider call) or ``null``
+    (the string is skipped). It comes from the preview/review UI.
     """
     started = time.time()
     result: Dict[str, Any] = {
@@ -117,6 +168,14 @@ def run_patch(
 
         # -- translate ----------------------------------------------------
         _emit(listener, "on_status", "translating", f"Translating {total} strings...")
+        overrides: Dict[str, Optional[str]] = {}
+        if overrides_json:
+            try:
+                parsed = json.loads(overrides_json)
+                if isinstance(parsed, dict):
+                    overrides = {str(k): (None if v is None else str(v)) for k, v in parsed.items()}
+            except ValueError:
+                _emit(listener, "on_log", "[!] Ignoring malformed overrides JSON.")
         engine = TranslatorEngine(
             cache_file=os.path.join(report_dir, "translation_cache.json"),
             source=source,
@@ -129,6 +188,21 @@ def run_patch(
         )
         results: Dict[str, TranslationResult] = {}
         done = 0
+        # User overrides never reach the provider: an explicit translation is
+        # used verbatim, a null override skips the string entirely.
+        pending_translate: List[str] = []
+        for value in pending:
+            if value in overrides:
+                chosen = overrides[value]
+                if chosen is None:
+                    results[value] = TranslationResult(value, value, "skipped",
+                                                       skipped_reason="user-skipped")
+                else:
+                    results[value] = TranslationResult(value, chosen, "done")
+                    done += 1
+                    _emit(listener, "on_progress", done, total)
+            else:
+                pending_translate.append(value)
 
         def on_result(res: TranslationResult) -> None:
             nonlocal done
@@ -138,13 +212,16 @@ def run_patch(
 
         # workers=1: the rate limiter serialises provider calls anyway, and a
         # phone has no business spawning extra threads for this.
-        engine.translate_many(pending, on_result=on_result, workers=1)
+        engine.translate_many(pending_translate, on_result=on_result, workers=1)
         stats = engine.stats
-        produced = stats["done"] + stats["cached"]
+        override_done = sum(1 for v in pending if v in overrides and overrides[v] is not None)
+        override_skipped = sum(1 for v in pending if v in overrides and overrides[v] is None)
+        produced = stats["done"] + stats["cached"] + override_done
         result["translated"] = produced
         _emit(
             listener, "on_log",
             f"[*] Translated {stats['done']}, cached {stats['cached']}, "
+            f"manual {override_done}, skipped {stats['skipped'] + override_skipped}, "
             f"failed {stats['error']} in {time.time() - started:.1f}s",
         )
         if engine.last_error:
@@ -155,7 +232,8 @@ def run_patch(
         translations = {
             value: res.translated
             for value, res in results.items()
-            if res.status == "done" and res.translated and res.translated != value
+            # "cached" is a produced translation, not a miss.
+            if res.status in ("done", "cached") and res.translated and res.translated != value
         }
 
         changed_files = 0

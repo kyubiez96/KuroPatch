@@ -6,8 +6,28 @@
 
     <string name="subtitle">On-device localisation patcher for Java games</string>
     <string name="section_input">1. Input file</string>
-    <string name="pick_jar">Load .jar</string>
-    <string name="no_file">No file selected</string>
+    <string name="pick_jar">Add .jar(s)</string>
+    <string name="queue_remove">✕</string>
+    <string name="preview_open">Preview strings…</string>
+    <string name="preview_title">Review strings</string>
+    <string name="preview_loading">Extracting strings…</string>
+    <string name="preview_count">%1$d strings</string>
+    <string name="preview_apply">Apply &amp; start</string>
+    <string name="preview_override_hint">Manual translation (blank = auto)</string>
+    <string name="preview_skip">Skip this string</string>
+    <string name="preview_single_only">Preview works with a single file in the queue</string>
+    <string name="preview_ready">Preview overrides captured — press Start</string>
+    <string name="preview_applied">%1$d manual, %2$d skipped</string>
+    <string name="stop">Stop</string>
+    <string name="history">History</string>
+    <string name="history_title">Re-patch from history</string>
+    <string name="history_empty">No history yet — patch something first</string>
+    <string name="history_clear">Clear</string>
+    <string name="history_cleared">History cleared</string>
+    <string name="history_pick_new">Settings restored — now pick the updated %1$s</string>
+    <string name="batch_progress">File %1$d/%2$d: %3$s</string>
+    <string name="batch_done">Batch done: %1$d/%2$d patched</string>
+    <string name="dialog_cancel">Cancel</string>
     <string name="section_options">2. Options</string>
     <string name="source_lang">Source language</string>
     <string name="target_lang">Target language</string>
@@ -23,6 +43,6 @@
     <string name="apk_not_supported">Full APK patching needs apktool, which requires a real JVM and cannot run on Android. Patch .jar game resources here, or use the PC CLI for APKs:\n\npython apk.py game.apk -t id -o out/</string>
     <string name="dialog_ok">OK</string>
     <string name="share_title">Share patched archive</string>
-    <string name="err_no_input">Pick a .jar file first</string>
+    <string name="err_no_input">Add a .jar file first</string>
     <string name="err_copy">Could not read the selected file</string>
 </resources>

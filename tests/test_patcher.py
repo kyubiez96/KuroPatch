@@ -159,10 +159,15 @@ def test_extract_then_rebuild_preserves_order_and_bytes(sample_jar, tmp_path):
     patcher.close()
 
     with zipfile.ZipFile(sample_jar) as before, zipfile.ZipFile(out) as after:
-        assert [i.filename for i in before.infolist()] == [i.filename for i in after.infolist()]
+        # Stale signatures are stripped on rebuild (the output is unsigned);
+        # everything else keeps its order and bytes.
+        stripped = {"META-INF/MANIFEST.MF"}
+        assert [i.filename for i in after.infolist()] == [
+            i.filename for i in before.infolist() if i.filename not in stripped
+        ]
         assert after.read("classes.dex") == before.read("classes.dex")
         assert after.read("assets/data.bin") == before.read("assets/data.bin")
-        assert after.read("META-INF/MANIFEST.MF") == MANIFEST.encode("utf-8")
+        assert "META-INF/MANIFEST.MF" not in after.namelist()
         # the previous version stored everything uncompressed
         assert all(i.compress_type == zipfile.ZIP_DEFLATED for i in after.infolist())
 

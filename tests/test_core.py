@@ -472,3 +472,108 @@ def test_uber_signer_failure_returns_empty(tmp_path, monkeypatch):
         assert engine._sign_with_uber(str(unsigned)) == ""
     finally:
         engine.clean_workspace()
+
+
+# ---------------------------------------------------------------------------
+# Defect-fix regression tests (v1.3.1)
+# ---------------------------------------------------------------------------
+def test_arrays_and_plurals_are_extracted(tmp_path):
+    """<string-array> and <plurals> used to be silently skipped."""
+    import core
+
+    xml = tmp_path / "strings.xml"
+    xml.write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n'
+        '    <string name="app_name">Game</string>\n'
+        '    <string-array name="levels"><item>Easy</item><item>Hard</item></string-array>\n'
+        '    <plurals name="coins"><item quantity="one">%d coin</item>'
+        '<item quantity="other">%d coins</item></plurals>\n'
+        "</resources>\n",
+        encoding="utf-8",
+    )
+    t = core.GameTranslator.__new__(core.GameTranslator)
+    parsed = core.GameTranslator._parse_xml_strings(t, str(xml))
+    assert parsed["app_name"] == "Game"
+    assert parsed["levels[0]"] == "Easy"
+    assert parsed["levels[1]"] == "Hard"
+    assert parsed["coins:one"] == "%d coin"
+    assert parsed["coins:other"] == "%d coins"
+
+
+def test_array_and_plural_items_are_written_back():
+    """Composite keys patch the right <item>, leaving siblings alone."""
+    import core
+
+    xml = (
+        "<resources>\n"
+        '    <string-array name="levels"><item>Easy</item><item>Hard</item></string-array>\n'
+        "</resources>"
+    )
+    out = core.GameTranslator._replace_resource_value(xml, "levels[1]", "Sulit")
+    assert "<item>Easy</item>" in out
+    assert "<item>Sulit</item>" in out
+
+    xml = (
+        "<resources>\n"
+        '    <plurals name="coins"><item quantity="one">%d coin</item>'
+        '<item quantity="other">%d coins</item></plurals>\n'
+        "</resources>"
+    )
+    out = core.GameTranslator._replace_resource_value(xml, "coins:other", "%d koin")
+    assert "%d coin</item>" in out
+    assert "%d koin</item>" in out
+
+
+def test_cached_translations_are_applied(wired):
+    """A fully cached second run must still write translations back."""
+    strings = wired.extract_strings()
+    first = wired.translate_strings(strings)
+    assert first, "first run should produce translations"
+    # Second run: everything comes from the cache.
+    wired2_strings = wired.extract_strings()
+    second = wired.translate_strings(wired2_strings)
+    assert second == first, "cached translations must be applied, not dropped"
+    stats = wired.engine.stats
+    assert stats["cached"] > 0
+
+
+def test_custom_keystore_is_not_clobbered(tmp_path, monkeypatch):
+    """sign_apk used to overwrite a user-supplied keystore with the debug one."""
+    import core
+
+    ks = tmp_path / "mine.keystore"
+    ks.write_bytes(b"fake-keystore")
+    engine = core.GameTranslator(output_dir=str(tmp_path / "out"))
+    engine.keystore_path = str(ks)
+    engine.alias = "myalias"
+    # Do not let the test touch real signing tools.
+    monkeypatch.setattr(engine, "_out", lambda: str(tmp_path / "out"))
+    assert engine.sign_apk(str(tmp_path / "nothing.apk")) == ""  # no such APK
+    assert engine.keystore_path == str(ks), "custom keystore must survive sign_apk"
+    assert engine.alias == "myalias", "custom alias must survive sign_apk"
+    engine.clean_workspace()
+
+
+def test_provider_name_is_honoured(monkeypatch, tmp_path):
+    """--provider used to be parsed and then silently ignored."""
+    import core
+    from translator import TranslatorEngine
+
+    seen = {}
+
+    real = TranslatorEngine
+
+    def spy(**kwargs):
+        seen.update(kwargs)
+        kwargs["provider"] = FakeProvider()
+        return real(**kwargs)
+
+    monkeypatch.setattr(core, "TranslatorEngine", spy)
+    engine = core.GameTranslator(output_dir=str(tmp_path / "out"))
+    engine.provider_name = "libretranslate"
+    try:
+        eng = engine._ensure_engine()
+        assert seen.get("provider_name") == "libretranslate"
+        eng.close()
+    finally:
+        engine.clean_workspace()

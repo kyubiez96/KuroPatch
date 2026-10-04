@@ -39,7 +39,8 @@ def test_end_to_end_patches_properties_and_smali(cli, sample_jar, tmp_path):
         props = archive.read("res/strings.properties").decode("iso-8859-1")
         smali = archive.read("com/game/Main.smali").decode("utf-8")
         assert archive.read("classes.dex") == bytes(range(256))
-        assert archive.read("META-INF/MANIFEST.MF") == MANIFEST.encode("utf-8")
+        # Stale signatures are stripped on rebuild; the output is unsigned.
+        assert "META-INF/MANIFEST.MF" not in archive.namelist()
         assert archive.testzip() is None
 
     assert "menu.start=Mulai Game" in props

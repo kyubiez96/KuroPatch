@@ -74,8 +74,8 @@ def fake_engine(monkeypatch):
                 handle.write("# report\n")
             return path
 
-        def run_full_pipeline(self, apk, output=None):
-            self.calls.append(("pipeline", apk, output))
+        def run_full_pipeline(self, apk, output=None, translate_all=False):
+            self.calls.append(("pipeline", apk, output, translate_all))
             verdict = {"size": 100, "v1": True, "v2": True}
             return {
                 "success": True,
@@ -105,7 +105,7 @@ def test_full_run_succeeds(fake_engine, tmp_path, capsys):
     assert "Patched APK" in text
     engine = fake_engine.instances[0]
     assert engine.target_lang == "id"
-    assert ("pipeline", apk, out) in engine.calls
+    assert ("pipeline", apk, out, False) in engine.calls
 
 
 def test_dry_run_lists_but_builds_nothing(fake_engine, tmp_path, capsys):

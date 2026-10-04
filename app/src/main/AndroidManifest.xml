@@ -33,6 +33,12 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".PreviewActivity"
+            android:exported="false"
+            android:label="@string/preview_title"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- Shares the patched .jar with other apps. Authorities use the build's
           applicationId so the debug suffix does not break sharing. -->
         <provider
