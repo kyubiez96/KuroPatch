@@ -103,7 +103,16 @@ def restore_segments(text: str, tokens: List[str]) -> str:
 _URL_RE = re.compile(r"^(?:[a-z][a-z0-9+.-]*://|www\.)", re.IGNORECASE)
 _PATH_RE = re.compile(r"^(?:[/~]|\.{1,2}[/\\]|[A-Za-z]:[\\/])")
 _IDENT_CHARS_RE = re.compile(r"[_.$/\-:]")
-_HAS_LETTER_RE = re.compile(r"[A-Za-z]")
+# Any Unicode letter, not just Latin: a Chinese/Japanese/Korean/Arabic game
+# string is translatable, and the old [A-Za-z] check silently dropped every
+# non-Latin source language ("no-latin").
+_HAS_LETTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)
+# CJK scripts where a single character is already a full morpheme ("剑", "盾").
+_CJK_RE = re.compile(
+    r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff"  # Han
+    r"\u3040-\u309f\u30a0-\u30ff"  # Hiragana + Katakana
+    r"\uac00-\ud7af]",  # Hangul syllables
+)
 # Resource names: res/drawable-hdpi/icon.png, assets/levels/one.tmx, ...
 _ASSET_RE = re.compile(r"^(?:res|assets|lib|META-INF)/", re.IGNORECASE)
 
@@ -120,10 +129,12 @@ def should_translate(text: str, target_lang: str = DEFAULT_TARGET, translate_all
     stripped = text.strip()
     if not stripped:
         return False, "empty"
-    if len(stripped) < 2:
+    # A single CJK character is already meaningful ("剑"); a single Latin
+    # character ("a", "x") is almost always junk.
+    if len(stripped) < 2 and not _CJK_RE.search(stripped):
         return False, "too-short"
     if not _HAS_LETTER_RE.search(stripped):
-        return False, "no-latin"
+        return False, "no-letters"
     if translate_all:
         return True, ""
 
@@ -142,7 +153,9 @@ def should_translate(text: str, target_lang: str = DEFAULT_TARGET, translate_all
             return False, "lower-token"
 
     # A value that is only digits/punctuation, e.g. "100%" or "--".
-    if not re.search(r"[A-Za-z]{2,}", stripped):
+    # Two or more letters in a row count as a word in any script; a single
+    # CJK character already passed the too-short check above.
+    if not re.search(r"[^\W\d_]{2,}", stripped) and not _CJK_RE.search(stripped):
         return False, "no-word"
     return True, ""
 

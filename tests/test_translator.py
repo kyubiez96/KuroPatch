@@ -91,6 +91,15 @@ def test_escaped_backslash_n_survives_translation():
         ("menu_start", False),          # identifier punctuation
         ("com.game.internal.Class", False),
         ("loading", False),             # single lowercase token
+        # Non-Latin source languages: the old [A-Za-z] checks dropped these.
+        ("开始游戏", True),               # Chinese
+        ("设置", True),
+        ("剑", True),                    # a single Han char is a full morpheme
+        ("設定", True),                  # Japanese
+        ("はじめから", True),
+        ("시작 게임", True),              # Korean
+        ("เกม", True),                   # Thai
+        ("Level %d 完成", True),          # mixed scripts
     ],
 )
 def test_should_translate(value, expected):
