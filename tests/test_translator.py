@@ -91,6 +91,14 @@ def test_escaped_backslash_n_survives_translation():
         ("menu_start", False),          # identifier punctuation
         ("com.game.internal.Class", False),
         ("loading", False),             # single lowercase token
+        # Technical tokens: never UI, and translating a key breaks lookups.
+        ("width", False),
+        ("height", False),
+        ("Width", False),
+        ("true", False),
+        ("null", False),
+        ("utf-8", False),
+        ("Screen width", True),         # ...but inside a real sentence it's UI
         # Non-Latin source languages: the old [A-Za-z] checks dropped these.
         ("开始游戏", True),               # Chinese
         ("设置", True),

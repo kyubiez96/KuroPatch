@@ -113,6 +113,16 @@ _CJK_RE = re.compile(
     r"\u3040-\u309f\u30a0-\u30ff"  # Hiragana + Katakana
     r"\uac00-\ud7af]",  # Hangul syllables
 )
+# Standalone tokens that are essentially never in-game UI text — they leak
+# into the constant pool as property keys, RMS names or debug labels, and
+# translating them can *break* the game (a getAppProperty("width") lookup
+# fails when the key becomes "lebar"). Never translated, even with
+# translate_all on.
+_TECHNICAL_TOKENS = frozenset({
+    "width", "height", "depth",
+    "true", "false", "null", "nil",
+    "utf-8", "utf8", "utf_8", "ascii", "unicode",
+})
 # Resource names: res/drawable-hdpi/icon.png, assets/levels/one.tmx, ...
 _ASSET_RE = re.compile(r"^(?:res|assets|lib|META-INF)/", re.IGNORECASE)
 
@@ -123,12 +133,16 @@ def should_translate(text: str, target_lang: str = DEFAULT_TARGET, translate_all
     Returns ``(ok, reason)``. ``reason`` is only meaningful when ``ok`` is False
     and is surfaced in the report so the user can see what was skipped.
 
-    ``translate_all`` disables every heuristic except the empty/too-short ones;
-    it is what ``--translate-all`` on the CLI maps to.
+    ``translate_all`` disables every heuristic except the empty/too-short/
+    technical-token ones; it is what ``--translate-all`` on the CLI maps to.
     """
     stripped = text.strip()
     if not stripped:
         return False, "empty"
+    # Technical tokens are never UI, in any language — and translating a
+    # property key breaks the lookup that uses it.
+    if stripped.lower() in _TECHNICAL_TOKENS:
+        return False, "technical-token"
     # A single CJK character is already meaningful ("剑"); a single Latin
     # character ("a", "x") is almost always junk.
     if len(stripped) < 2 and not _CJK_RE.search(stripped):
