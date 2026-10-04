@@ -58,6 +58,8 @@ _PROTECT_PATTERNS: List[Pattern[str]] = [
     re.compile(r"%(?:\d+\$)?[-#+ 0,(]*\d*(?:\.\d+)?[a-zA-Z%]"),  # printf / %1$s
     re.compile(r"\$\{[^}]*\}"),                  # ${var}
     re.compile(r"\{[^{}]*\}"),                   # {0} {name}
+    re.compile(r"\\(?:[mfxnd]|p[1278]|v600|v1)"),  # Gameloft pack codes: \m \f \x \n \d \p1 \p2 \p7 \p8 \v1 \v600
+    re.compile(r"\]"),                           # Gameloft pack line-break marker
     re.compile(r"</?[A-Za-z][^<>]*>"),            # html tags
     re.compile(r"&(?:#\d+|#x[0-9a-fA-F]+|[a-zA-Z]+);"),  # xml entities
     re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),  # ip addresses

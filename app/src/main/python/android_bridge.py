@@ -34,8 +34,10 @@ from typing import Any, Dict, List, Optional
 from main import (
     Collected,
     collect_from_classes,
+    collect_from_packs,
     collect_from_properties,
     collect_from_smali,
+    patch_pack_files,
     write_reports,
 )
 from patcher import JarPatcher, patch_class_strings, patch_smali_literals
@@ -81,12 +83,15 @@ def preview_strings(
         _prop_files, prop_strings = collect_from_properties(patcher, 3, translate_all)
         _smali_files, smali_strings = collect_from_smali(patcher, 3, translate_all)
         _class_files, class_strings = collect_from_classes(patcher, 3, translate_all)
+        _pack_files, pack_strings = collect_from_packs(patcher, 3)
         origins: Dict[str, List[str]] = {}
         for value, where in prop_strings.origins.items():
             origins.setdefault(value, []).extend(where)
         for value, where in smali_strings.origins.items():
             origins.setdefault(value, []).extend(where)
         for value, where in class_strings.origins.items():
+            origins.setdefault(value, []).extend(where)
+        for value, where in pack_strings.origins.items():
             origins.setdefault(value, []).extend(where)
         strings = [
             {"value": value, "origin": "; ".join(origins[value][:2])}
@@ -165,7 +170,8 @@ def run_patch(
         prop_files, prop_strings = collect_from_properties(patcher, 3, translate_all)
         smali_files, smali_strings = collect_from_smali(patcher, 3, translate_all)
         class_files, class_strings = collect_from_classes(patcher, 3, translate_all)
-        pending = sorted(set(prop_strings.origins) | set(smali_strings.origins) | set(class_strings.origins))
+        pack_files, pack_strings = collect_from_packs(patcher, 3)
+        pending = sorted(set(prop_strings.origins) | set(smali_strings.origins) | set(class_strings.origins) | set(pack_strings.origins))
         total = len(pending)
         result["total"] = total
         _emit(
@@ -270,10 +276,12 @@ def run_patch(
             if replaced and new_data != data:
                 patcher.write_bytes(path, new_data)
                 class_changed += replaced
+
+        pack_changed = patch_pack_files(pack_files, translations) if pack_files else 0
         _emit(
             listener, "on_log",
             f"[*] Rewrote {changed_files} properties files, {smali_changed} smali literals, "
-            f"{class_changed} class string constants",
+            f"{class_changed} class string constants, {pack_changed} string-pack strings",
         )
 
         # -- reports ------------------------------------------------------

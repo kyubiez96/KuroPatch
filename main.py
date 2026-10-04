@@ -32,6 +32,12 @@ from patcher import (
     patch_class_strings,
     patch_smali_literals,
 )
+from stringpacks import (
+    StringPack,
+    build_resource,
+    is_string_pack_entry,
+    parse_resource,
+)
 from translator import (
     DEFAULT_SOURCE,
     DEFAULT_TARGET,
@@ -140,6 +146,66 @@ def collect_from_classes(patcher: JarPatcher, minimum: int, translate_all: bool 
     return files, collected
 
 
+def collect_from_packs(patcher: JarPatcher, minimum: int) -> Tuple[List[Tuple[str, str, List["StringPack"]]], Collected]:
+    """Return ``[(workspace_path, archive_name, packs)]`` for Gameloft string packs.
+
+    ``RES_STRINGS*`` resources hold LZMA-compressed string tables — this is
+    where Gameloft J2ME games keep dialogue and UI text. Every entry in a
+    pack is display text by construction, so only the safety filters apply
+    (empty / too short / technical token), never the content heuristics.
+    """
+    pack_files: List[Tuple[str, str, List["StringPack"]]] = []
+    collected = Collected()
+
+    for root, _dirs, files in os.walk(patcher.workspace):
+        for filename in files:
+            ws_path = os.path.join(root, filename)
+            rel = os.path.relpath(ws_path, patcher.workspace).replace(os.sep, "/")
+            if not is_string_pack_entry(rel):
+                continue
+            try:
+                with open(ws_path, "rb") as handle:
+                    packs = parse_resource(handle.read())
+            except (OSError, ValueError):
+                continue
+            pack_files.append((ws_path, rel, packs))
+            for pack_index, pack in enumerate(packs):
+                for str_index, value in enumerate(pack.strings):
+                    collected.add(value, f"{rel}::pack{pack_index}#{str_index}", minimum, True)
+
+    return pack_files, collected
+
+
+def patch_pack_files(pack_files: List[Tuple[str, str, List["StringPack"]]],
+                     translations: Dict[str, str]) -> int:
+    """Apply ``translations`` to pack strings and rewrite the resource files.
+
+    Returns the number of strings replaced. Files that fail to rebuild are
+    left untouched.
+    """
+    replaced = 0
+    for ws_path, _rel, packs in pack_files:
+        dirty = False
+        for pack in packs:
+            for index, value in enumerate(pack.strings):
+                new_value = translations.get(value)
+                if new_value and new_value != value:
+                    pack.strings[index] = new_value
+                    replaced += 1
+                    dirty = True
+        if dirty:
+            try:
+                rebuilt = build_resource(packs)
+            except ValueError:
+                continue
+            try:
+                with open(ws_path, "wb") as handle:
+                    handle.write(rebuilt)
+            except OSError:
+                continue
+    return replaced
+
+
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
@@ -246,18 +312,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"[*] {len(class_files)} class files, "
               f"{len(class_strings.origins)} translatable string constants")
 
+        pack_files, pack_strings = collect_from_packs(patcher, args.min_length)
+        if pack_files:
+            print(f"[*] {len(pack_files)} Gameloft string-pack resources, "
+                  f"{len(pack_strings.origins)} translatable pack strings")
+
         # One translation per distinct string, even when it appears 200 times.
-        pending = sorted(set(prop_strings.origins) | set(smali_strings.origins) | set(class_strings.origins))
+        pending = sorted(set(prop_strings.origins) | set(smali_strings.origins) | set(class_strings.origins) | set(pack_strings.origins))
 
         # Merge provenance: the same string may live in several places,
         # and the report should say where.
         merged = Collected()
-        merged.total_seen = prop_strings.total_seen + smali_strings.total_seen + class_strings.total_seen
+        merged.total_seen = prop_strings.total_seen + smali_strings.total_seen + class_strings.total_seen + pack_strings.total_seen
         for value in pending:
             merged.origins[value] = (
                 list(prop_strings.origins.get(value, []))
                 + list(smali_strings.origins.get(value, []))
                 + list(class_strings.origins.get(value, []))
+                + list(pack_strings.origins.get(value, []))
             )
 
         if not pending:
@@ -333,8 +405,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     patcher.write_bytes(path, new_data)
                     class_changed += replaced
 
+        pack_changed = patch_pack_files(pack_files, translations) if pack_files else 0
+
         print(f"[*] Rewrote {changed_files} properties files, {smali_changed} smali literals, "
-              f"{class_changed} class string constants")
+              f"{class_changed} class string constants, {pack_changed} string-pack strings")
 
         found_path, done_path = write_reports(args.report_dir, merged, results)
         print(f"[*] Reports: {found_path}, {done_path}")
