@@ -1,196 +1,182 @@
-"""Tests for the apk.py CLI (GameTranslator is stubbed, no JDK needed)."""
-
-from __future__ import annotations
+"""Tests for core/apk.py, incl. the binary AndroidManifest.xml parser."""
 
 import os
+import shutil
+import struct
+import sys
+import tempfile
+import unittest
 import zipfile
 
-import pytest
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core import apk
 
 
-def _make_apk(path: str) -> str:
-    with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("AndroidManifest.xml", b"<manifest/>")
-        archive.writestr("classes.dex", b"dex")
-    return path
+# ---------------------------------------------------------------------------
+# minimal binary-AXML builder (mirrors the format apk.parse_axml reads)
+# ---------------------------------------------------------------------------
+
+def _u8len(n):
+    if n < 0x80:
+        return struct.pack("B", n)
+    return struct.pack(">H", n | 0x8000)
 
 
-@pytest.fixture
-def fake_engine(monkeypatch):
-    import apk as cli_module
-    import core
-
-    class Engine:
-        instances = []
-
-        def __init__(self, *args, **kwargs):
-            Engine.instances.append(self)
-            self.calls = []
-            self.source_lang = "en"
-            self.target_lang = "id"
-            self.workers = 4
-            self.max_retries = 3
-            self.request_delay = 0.35
-            self.api_key = ""
-            self.engine = None
-            self.keystore_path = None
-            self.alias = "androiddebugkey"
-            self.keystore_pass = "android"
-            self.key_pass = "android"
-            self.tools = {"apktool": "/fake/apktool.jar"}
-            self.sources = []
-
-        def set_callbacks(self, **kwargs):
-            self.calls.append(("callbacks", kwargs))
-
-        def setup_tools(self, tools_dir):
-            self.calls.append(("setup_tools", tools_dir))
-            return True
-
-        def download_tools(self, tools_dir):
-            self.calls.append(("download_tools", tools_dir))
-            return {"apktool": True}
-
-        def preflight(self, apk, tools_dir=None):
-            self.calls.append(("preflight", apk))
-            return []
-
-        def resolve_output_dir(self, apk, output=None):
-            self.calls.append(("resolve_output_dir", apk))
-            return output or "/tmp/out"
-
-        def decompile_apk(self, apk):
-            self.calls.append(("decompile_apk", apk))
-            return True
-
-        def extract_strings(self):
-            self.calls.append(("extract",))
-            return {"a": "Start Game"}
-
-        def write_report(self, path=None):
-            self.calls.append(("report", path))
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w") as handle:
-                handle.write("# report\n")
-            return path
-
-        def run_full_pipeline(self, apk, output=None, translate_all=False):
-            self.calls.append(("pipeline", apk, output, translate_all))
-            verdict = {"size": 100, "v1": True, "v2": True}
-            return {
-                "success": True,
-                "output_apk": "/tmp/out/patched.apk",
-                "stats": {"done": 3, "cached": 0, "error": 0, "items": []},
-                "errors": [],
-                "report": "/tmp/out/found_strings.txt",
-                "verification": verdict,
-            }
-
-        def clean_workspace(self):
-            pass
-
-    monkeypatch.setattr(cli_module, "GameTranslator", Engine)
-    monkeypatch.setattr(core, "GameTranslator", Engine)
-    Engine.instances.clear()
-    return Engine
+def build_string_pool(strings):
+    enc = []
+    for s in strings:
+        b = s.encode("utf-8")
+        enc.append(_u8len(len(b)) + _u8len(len(b)) + b + b"\x00")
+    offsets, pos = [], 0
+    for e in enc:
+        offsets.append(pos)
+        pos += len(e)
+    body = b"".join(enc)
+    body += b"\x00" * ((-len(body)) % 4)
+    strings_start = 28 + 4 * len(strings)
+    chunk_size = strings_start + len(body)
+    out = struct.pack("<HHI", 0x0001, 28, chunk_size)
+    out += struct.pack("<IIIII", len(strings), 0, 0x100, strings_start, 0)
+    out += b"".join(struct.pack("<I", o) for o in offsets)
+    return out + body
 
 
-def test_full_run_succeeds(fake_engine, tmp_path, capsys):
-    import apk as cli_module
-
-    apk = _make_apk(str(tmp_path / "game.apk"))
-    out = str(tmp_path / "out")
-    assert cli_module.main([apk, "-t", "id", "-o", out, "--tools", str(tmp_path / "tools")]) == 0
-    text = capsys.readouterr().out
-    assert "Patched APK" in text
-    engine = fake_engine.instances[0]
-    assert engine.target_lang == "id"
-    assert ("pipeline", apk, out, False) in engine.calls
-
-
-def test_dry_run_lists_but_builds_nothing(fake_engine, tmp_path, capsys):
-    import apk as cli_module
-
-    apk = _make_apk(str(tmp_path / "game.apk"))
-    out = str(tmp_path / "out")
-    assert cli_module.main([apk, "--dry-run", "-o", out, "--tools", str(tmp_path / "tools")]) == 0
-    engine = fake_engine.instances[0]
-    assert ("decompile_apk", apk) in engine.calls
-    assert ("extract",) in engine.calls
-    assert not any(call[0] == "pipeline" for call in engine.calls)
-    assert "Dry run" in capsys.readouterr().out
+def build_start_element(name_idx, attrs):
+    """attrs: list of (name_idx, value_string_idx)."""
+    n = len(attrs)
+    out = struct.pack("<HHI", 0x0102, 16, 36 + 20 * n)
+    out += struct.pack("<I", 0)      # lineNumber
+    out += struct.pack("<i", -1)     # comment
+    out += struct.pack("<i", -1)     # ns
+    out += struct.pack("<i", name_idx)
+    out += struct.pack("<HHH", 20, 20, n)
+    out += struct.pack("<HHH", 0xFFFF, 0xFFFF, 0xFFFF)
+    for aname, aval in attrs:
+        out += struct.pack("<i", -1)     # ns
+        out += struct.pack("<i", aname)
+        out += struct.pack("<i", -1)     # rawValue
+        out += struct.pack("<HBBI", 8, 0, 0x03, aval)  # string value
+    return out
 
 
-def test_missing_input_is_a_clean_error(fake_engine, tmp_path):
-    import apk as cli_module
-
-    assert cli_module.main([str(tmp_path / "nope.apk")]) == 1
-
-
-def test_non_archive_is_a_clean_error(fake_engine, tmp_path):
-    import apk as cli_module
-
-    bogus = tmp_path / "x.apk"
-    bogus.write_bytes(b"nope")
-    assert cli_module.main([str(bogus)]) == 1
+def build_end_element(name_idx):
+    out = struct.pack("<HHI", 0x0103, 16, 24)
+    out += struct.pack("<I", 0)
+    out += struct.pack("<i", -1)
+    out += struct.pack("<i", -1)
+    out += struct.pack("<i", name_idx)
+    return out
 
 
-def test_preflight_failure_blocks_the_run(fake_engine, tmp_path, monkeypatch):
-    import apk as cli_module
-
-    real_preflight = fake_engine.preflight
-
-    def blocked(self, apk, tools_dir=None):
-        return ["java not found on PATH"]
-
-    monkeypatch.setattr(fake_engine, "preflight", blocked)
-    apk = _make_apk(str(tmp_path / "game.apk"))
-    assert cli_module.main([apk, "-o", str(tmp_path / "out"), "--tools", str(tmp_path / "t")]) == 1
-
-
-def test_failed_pipeline_returns_one(fake_engine, tmp_path, monkeypatch):
-    import apk as cli_module
-
-    def broken(self, apk, output=None):
-        return {"success": False, "errors": ["boom"], "stats": {}, "report": "", "verification": {}}
-
-    monkeypatch.setattr(fake_engine, "run_full_pipeline", broken)
-    apk = _make_apk(str(tmp_path / "game.apk"))
-    assert cli_module.main([apk, "-o", str(tmp_path / "out"), "--tools", str(tmp_path / "t")]) == 1
-
-
-def test_download_happens_when_tools_are_missing(fake_engine, tmp_path, monkeypatch):
-    import apk as cli_module
-
-    def no_tools(self, tools_dir):
-        self.calls.append(("setup_tools", tools_dir))
-        return False
-
-    monkeypatch.setattr(fake_engine, "setup_tools", no_tools)
-    apk = _make_apk(str(tmp_path / "game.apk"))
-    assert cli_module.main([apk, "-o", str(tmp_path / "out"), "--tools", str(tmp_path / "t")]) == 0
-    engine = fake_engine.instances[0]
-    assert ("download_tools", str(tmp_path / "t")) in engine.calls
+def build_test_manifest():
+    pool = ["manifest", "package", "com.example.game",
+            "versionCode", "42", "versionName", "1.0",
+            "uses-sdk", "minSdkVersion", "21", "targetSdkVersion", "34",
+            "uses-permission", "name", "android.permission.INTERNET"]
+    idx = {s: i for i, s in enumerate(pool)}
+    chunks = [build_string_pool(pool)]
+    chunks.append(build_start_element(idx["manifest"], [
+        (idx["package"], idx["com.example.game"]),
+        (idx["versionCode"], idx["42"]),
+        (idx["versionName"], idx["1.0"]),
+    ]))
+    chunks.append(build_start_element(idx["uses-sdk"], [
+        (idx["minSdkVersion"], idx["21"]),
+        (idx["targetSdkVersion"], idx["34"]),
+    ]))
+    chunks.append(build_end_element(idx["uses-sdk"]))
+    chunks.append(build_start_element(idx["uses-permission"], [
+        (idx["name"], idx["android.permission.INTERNET"]),
+    ]))
+    chunks.append(build_end_element(idx["uses-permission"]))
+    chunks.append(build_end_element(idx["manifest"]))
+    body = b"".join(chunks)
+    return struct.pack("<HHI", 0x0003, 8, 8 + len(body)) + body
 
 
-def test_no_download_flag_is_honored(fake_engine, tmp_path, monkeypatch):
-    import apk as cli_module
+# ---------------------------------------------------------------------------
 
-    monkeypatch.setattr(fake_engine, "setup_tools", lambda self, d: False)
-    apk = _make_apk(str(tmp_path / "game.apk"))
-    assert cli_module.main([apk, "-o", str(tmp_path / "out"),
-                            "--tools", str(tmp_path / "t"), "--no-download"]) == 1
+class TestAxml(unittest.TestCase):
+    def test_parse_manifest_binary(self):
+        info = apk.parse_manifest(build_test_manifest())
+        self.assertEqual(info.package, "com.example.game")
+        self.assertEqual(info.version_code, "42")
+        self.assertEqual(info.version_name, "1.0")
+        self.assertEqual(info.min_sdk, "21")
+        self.assertEqual(info.target_sdk, "34")
+        self.assertEqual(info.permissions, ["android.permission.INTERNET"])
+
+    def test_events(self):
+        events = apk.parse_axml(build_test_manifest())
+        starts = [e for e in events if e.kind == "start"]
+        self.assertEqual([e.name for e in starts],
+                         ["manifest", "uses-sdk", "uses-permission"])
+        self.assertEqual(starts[0].attrs["package"], "com.example.game")
+
+    def test_bad_magic_raises(self):
+        with self.assertRaises(apk.AxmlError):
+            apk.parse_axml(b"PK\x03\x04 not xml")
+
+    def test_truncated_raises(self):
+        with self.assertRaises(apk.AxmlError):
+            apk.parse_axml(build_test_manifest()[:20])
+
+    def test_plain_xml_manifest(self):
+        data = (b'<?xml version="1.0"?>'
+                b'<manifest xmlns:android="http://schemas.android.com/apk/res/android"'
+                b' package="com.plain.app" android:versionCode="7"'
+                b' android:versionName="2.1">'
+                b'<uses-sdk android:minSdkVersion="24"/>'
+                b'<uses-permission android:name="android.permission.CAMERA"/>'
+                b'</manifest>')
+        info = apk.parse_manifest(data)
+        self.assertEqual(info.package, "com.plain.app")
+        self.assertEqual(info.version_code, "7")
+        self.assertEqual(info.min_sdk, "24")
+        self.assertEqual(info.permissions, ["android.permission.CAMERA"])
 
 
-def test_keystore_options_reach_the_engine(fake_engine, tmp_path):
-    import apk as cli_module
+class TestExtract(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.apk_path = os.path.join(self.tmp, "game.apk")
+        with zipfile.ZipFile(self.apk_path, "w") as zf:
+            zf.writestr("AndroidManifest.xml", build_test_manifest())
+            zf.writestr("res/values/strings.xml",
+                        '<?xml version="1.0"?><resources>'
+                        '<string name="hi">Hello</string></resources>')
+            zf.writestr("assets/lang.properties", "k=v\n")
 
-    apk = _make_apk(str(tmp_path / "game.apk"))
-    ks = tmp_path / "me.keystore"
-    ks.write_bytes(b"ks")
-    cli_module.main([apk, "-o", str(tmp_path / "out"), "--tools", str(tmp_path / "t"),
-                     "--keystore", str(ks), "--ks-alias", "me", "--ks-pass", "p1"])
-    engine = fake_engine.instances[0]
-    assert engine.keystore_path == str(ks)
-    assert engine.alias == "me"
-    assert engine.keystore_pass == "p1"
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_extract_and_list(self):
+        out = os.path.join(self.tmp, "out")
+        got = apk.extract_apk(self.apk_path, out, use_apktool=False)
+        self.assertTrue(os.path.isfile(os.path.join(got, "AndroidManifest.xml")))
+        info = apk.read_manifest(got)
+        self.assertEqual(info.package, "com.example.game")
+        res = apk.list_string_resources(got)
+        self.assertEqual(len(res), 2)
+        self.assertTrue(any(p.endswith("strings.xml") for p in res))
+        self.assertTrue(any(p.endswith(".properties") for p in res))
+
+    def test_missing_apk_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            apk.extract_apk(os.path.join(self.tmp, "nope.apk"), self.tmp)
+
+    def test_not_a_zip_raises(self):
+        bad = os.path.join(self.tmp, "bad.apk")
+        with open(bad, "wb") as fh:
+            fh.write(b"definitely not a zip")
+        with self.assertRaises(ValueError):
+            apk.extract_apk(bad, self.tmp, use_apktool=False)
+
+    def test_missing_manifest_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            apk.read_manifest(self.tmp)
+
+
+if __name__ == "__main__":
+    unittest.main()

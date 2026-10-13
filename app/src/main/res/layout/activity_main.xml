@@ -1,294 +1,169 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fillViewport="true">
+    android:fillViewport="true"
+    android:background="#070A12">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="16dp">
+        android:padding="20dp">
+
+        <!-- Header -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="KuroPatch"
+            android:textSize="32sp"
+            android:textStyle="bold"
+            android:textColor="#EEF1F8" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/app_name"
-            android:textSize="24sp"
-            android:textStyle="bold" />
+            android:text="Game localisation, on-device"
+            android:textSize="14sp"
+            android:textColor="#8B94AD"
+            android:layout_marginBottom="24dp" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="@string/subtitle"
-            android:textSize="13sp" />
-
-        <!-- Input file -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/section_input"
-            android:textStyle="bold" />
-
-        <LinearLayout
+        <!-- APK card -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardApk"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:visibility="gone"
+            app:cardBackgroundColor="#141926"
+            app:cardCornerRadius="16dp"
+            app:strokeColor="#1E2740"
+            app:strokeWidth="1dp"
+            android:layout_marginBottom="16dp">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
-                android:text="@string/input_folder"
-                android:textSize="13sp" />
-
-            <TextView
-                android:id="@+id/tvInFolder"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:ellipsize="end"
-                android:singleLine="true"
-                android:text="@string/input_folder_default"
-                android:textSize="13sp" />
-
-            <Button
-                android:id="@+id/btnChangeInput"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/change" />
-
-            <Button
-                android:id="@+id/btnResetInput"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/reset" />
-        </LinearLayout>
-
-        <Button
-            android:id="@+id/btnPick"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:text="@string/pick_jar" />
-
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/recyclerQueue"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:maxHeight="160dp" />
-
-        <Button
-            android:id="@+id/btnPreview"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:enabled="false"
-            android:text="@string/preview_open" />
-
-        <!-- Options -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/section_options"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/source_lang" />
-
-        <Spinner
-            android:id="@+id/spinnerSource"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/target_lang" />
-
-        <Spinner
-            android:id="@+id/spinnerTarget"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/provider" />
-
-        <Spinner
-            android:id="@+id/spinnerProvider"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
-
-        <com.google.android.material.textfield.TextInputLayout
-            android:id="@+id/apiKeyLayout"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="@string/api_key_hint"
-            android:visibility="gone">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/etApiKey"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="textPassword" />
-        </com.google.android.material.textfield.TextInputLayout>
+                android:orientation="vertical"
+                android:padding="16dp">
 
-        <CheckBox
-            android:id="@+id/cbTranslateAll"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/translate_all" />
+                <TextView
+                    android:id="@+id/tvApkName"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="#EEF1F8"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
 
-        <LinearLayout
+        <!-- Pick APK -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnPickApk"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Pick APK"
+            app:cornerRadius="14dp"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Extract -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnExtract"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Extract strings"
+            android:enabled="false"
+            app:cornerRadius="14dp"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Strings card -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardStrings"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:orientation="horizontal">
+            android:visibility="gone"
+            app:cardBackgroundColor="#141926"
+            app:cardCornerRadius="16dp"
+            app:strokeColor="#1E2740"
+            app:strokeWidth="1dp"
+            android:layout_marginBottom="16dp">
 
-            <Button
-                android:id="@+id/btnStart"
-                android:layout_width="0dp"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
-                android:layout_weight="1"
-                android:enabled="false"
-                android:text="@string/start" />
+                android:orientation="vertical"
+                android:padding="16dp">
 
-            <Button
-                android:id="@+id/btnStop"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
-                android:layout_weight="1"
-                android:enabled="false"
-                android:text="@string/stop" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Target language"
+                    android:textColor="#8B94AD"
+                    android:textSize="12sp"
+                    android:layout_marginBottom="4dp" />
 
-            <Button
-                android:id="@+id/btnHistory"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/history" />
-        </LinearLayout>
+                <Spinner
+                    android:id="@+id/spinnerLang"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Translation provider"
+                    android:textColor="#8B94AD"
+                    android:textSize="12sp"
+                    android:layout_marginBottom="4dp" />
+
+                <Spinner
+                    android:id="@+id/spinnerProvider"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="4dp" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Translate -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnTranslate"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Auto-translate"
+            android:enabled="false"
+            app:cornerRadius="14dp"
+            app:backgroundTint="#5B9DFF"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Patch -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnPatch"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Patch APK"
+            android:enabled="false"
+            app:cornerRadius="14dp"
+            app:backgroundTint="#2EE06F"
+            android:layout_marginBottom="16dp" />
 
         <!-- Progress -->
+        <com.google.android.material.progressindicator.LinearProgressIndicator
+            android:id="@+id/progressBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:indeterminate="true"
+            android:visibility="gone"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Status -->
         <TextView
             android:id="@+id/tvStatus"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:text="@string/status_ready"
-            android:textSize="13sp" />
-
-        <ProgressBar
-            android:id="@+id/progressBar"
-            style="?android:attr/progressBarStyleHorizontal"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:max="100"
-            android:progress="0" />
-
-        <TextView
-            android:id="@+id/tvLog"
-            android:layout_width="match_parent"
-            android:layout_height="180dp"
-            android:layout_marginTop="8dp"
-            android:background="#1E1E1E"
-            android:fontFamily="monospace"
-            android:padding="8dp"
-            android:scrollbars="vertical"
-            android:textColor="#E1E1E1"
-            android:textSize="11sp" />
-
-        <!-- Output -->
-        <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/section_output"
-            android:textStyle="bold" />
+            android:text="Pick an APK to start"
+            android:textColor="#8B94AD"
+            android:textSize="14sp" />
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
-                android:text="@string/output_folder"
-                android:textSize="13sp" />
-
-            <TextView
-                android:id="@+id/tvOutFolder"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:ellipsize="end"
-                android:singleLine="true"
-                android:text="@string/output_folder_default"
-                android:textSize="13sp" />
-
-            <Button
-                android:id="@+id/btnChangeFolder"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/change" />
-
-            <Button
-                android:id="@+id/btnResetFolder"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/reset" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/tvOutput"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:text="@string/no_output"
-            android:textIsSelectable="true"
-            android:textSize="13sp" />
-
-        <Button
-            android:id="@+id/btnShare"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:enabled="false"
-            android:text="@string/share_output" />
-
-        <TextView
-            android:id="@+id/tvVersion"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:gravity="center"
-            android:text="@string/app_version_name"
-            android:textSize="11sp" />
     </LinearLayout>
 </ScrollView>

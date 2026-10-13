@@ -1,8 +1,6 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
-    // Embeds the KuroPatch Python engine (patcher.py, translator.py, main.py)
-    // so .jar patching runs on-device. See the syncPythonEngine task below.
     id 'com.chaquo.python'
 }
 
@@ -10,93 +8,35 @@ android {
     namespace 'org.kuropatch'
     compileSdk 34
 
-    // Version follows the release tag: v1.4.3 -> versionName "1.4.3".
-    // (Semantic versioning: patch = last number, minor = middle, major = first.)
-    // Non-tag builds (main branch) report "dev". versionCode is the commit
-    // count, so it always increases.
-    def gitTagVersion = {
-        try {
-            def stdout = new ByteArrayOutputStream()
-            exec {
-                commandLine "git", "describe", "--tags", "--exact-match", "--match", "v*"
-                standardOutput = stdout
-                ignoreExitValue = true
-            }
-            def tag = stdout.toString().trim()
-            if (tag.startsWith("v")) return tag.substring(1)
-        } catch (Exception ignored) { }
-        return "dev"
-    }
-    def gitCommitCount = {
-        try {
-            def stdout = new ByteArrayOutputStream()
-            exec {
-                commandLine "git", "rev-list", "--count", "HEAD"
-                standardOutput = stdout
-                ignoreExitValue = true
-            }
-            def count = stdout.toString().trim()
-            if (count.isInteger()) return count.toInteger()
-        } catch (Exception ignored) { }
-        return 1
-    }
-
     defaultConfig {
         applicationId "org.kuropatch"
-        // Chaquopy 16+ requires minSdk 24.
-        minSdk 24
+        minSdk 26
         targetSdk 34
-        versionCode gitCommitCount()
-        versionName gitTagVersion()
-        // In-app version label (BuildConfig is disabled in this project).
-        resValue "string", "app_version_name", "v${gitTagVersion()}"
+        versionCode 1
+        versionName "2.0.0"
 
-        // The Python interpreter is native: Chaquopy requires abiFilters.
-        // 64-bit only (Python 3.12+ drops 32-bit; staying 64-bit keeps the
-        // APK smaller and covers current devices/emulators).
-        ndk {
-            abiFilters "arm64-v8a", "x86_64"
+        ndk { abiFilters "arm64-v8a", "armeabi-v7a" }
+
+        python {
+            pip {
+                // stdlib only — no pip deps needed
+            }
         }
     }
 
     buildTypes {
-        debug {
-            applicationIdSuffix ".debug"
-            versionNameSuffix "-debug"
-        }
         release {
-            // Signed with the standard Android debug key so CI can publish an
-            // actually installable artifact. Replace with a real keystore
-            // (and a secrets-based signing config) before shipping to users.
-            signingConfig signingConfigs.debug
             minifyEnabled false
-            shrinkResources false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
         }
     }
+    buildFeatures { viewBinding true }
+}
 
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = '17'
-    }
-
-    buildFeatures {
-        buildConfig false
-    }
-
-    packaging {
-        resources {
-            excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE*', 'META-INF/NOTICE*']
-        }
-    }
-
-    lint {
-        abortOnError false
-        checkReleaseBuilds false
+chaquopy {
+    defaultConfig { version "3.12" }
+    sourceSets {
+        main { python { srcDirs = ["../../core", "../../translate"] } }
     }
 }
 
@@ -104,50 +44,4 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
-    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-    implementation 'androidx.recyclerview:recyclerview:1.3.2'
-}
-
-// ---------------------------------------------------------------------------
-// Chaquopy: Python engine on-device
-// ---------------------------------------------------------------------------
-chaquopy {
-    defaultConfig {
-        // CPython version bundled per ABI.
-        version "3.11"
-        pip {
-            // Same runtime deps as requirements.txt (deep-translator drives the
-            // default google-web provider; tqdm is optional but harmless).
-            install "deep-translator>=1.11.4,<2.0.0"
-            install "tqdm>=4.66.0"
-        }
-    }
-}
-
-// The Python engine lives at the repository root (patcher.py, translator.py,
-// main.py, ui.py, core.py) as the single source of truth. Copy it into the
-// module's Python source set before every build so the APK always embeds the
-// current engine. android_bridge.py (the Chaquopy entry point) is committed
-// directly under src/main/python and is NOT overwritten here.
-tasks.register("syncPythonEngine") {
-    def engineFiles = ["patcher.py", "translator.py", "core.py", "main.py", "ui.py", "stringpacks.py"]
-    def pythonDir = file("src/main/python")
-    // Skip the up-to-date check: cheap copy, and it must reflect the latest
-    // root sources even when Gradle thinks nothing changed.
-    outputs.upToDateWhen { false }
-    doLast {
-        engineFiles.each { name ->
-            delete("$pythonDir/$name")
-        }
-        copy {
-            from(rootDir) {
-                include(engineFiles)
-            }
-            into(pythonDir)
-        }
-        logger.lifecycle("Synced Python engine into ${pythonDir}")
-    }
-}
-tasks.named("preBuild").configure {
-    dependsOn("syncPythonEngine")
 }

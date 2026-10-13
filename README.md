@@ -1,151 +1,58 @@
-# KuroPatch
+# KuroPatch v2
 
-Automated localisation patcher for Java games. Scan, extract, translate and
-rebuild — for `.jar` game resources and for full Android APKs.
+Game localisation patcher — rebuilt from scratch. Python stdlib only, no
+pip dependencies for the core engine.
 
-## Install
+## Layout
 
-```bash
-pip install -r requirements.txt
+```
+kuropatch-v2/
+  core/        patching engine (stdlib only)
+    apk.py       APK extract, binary AndroidManifest.xml parser, resource discovery
+    strings.py   .properties / strings.xml / .stringpack parsers (round-trip safe)
+    patcher.py   apply translations, repack, zipalign, sign
+  cli/
+    main.py      `kpatch` command line (extract/translate/build/patch)
+  translate/     auto-translate engine (separate module, Agnes BYOK)
+  tests/         unittest suite (31 tests)
 ```
 
 ## Usage
 
-### JAR / APK resources
-
 ```bash
-python main.py game.jar -o game_ID.jar --target id
+# unpack an APK, show manifest info + string files
+python3 -m cli.main extract game.apk
+
+# apply a translations JSON to a strings file
+python3 -m cli.main translate res/values/strings.xml \
+    --translations id.json -o res/values-id/strings.xml
+
+# auto-translate with the translate engine (BYOK via AGNES_API_KEY)
+AGNES_API_KEY=... python3 -m cli.main translate res/values/strings.xml \
+    --auto --provider agnes --lang id
+
+# repack an extracted tree
+python3 -m cli.main build game.apk.extracted -o game-id.apk --sign
+
+# full pipeline
+python3 -m cli.main patch game.apk --lang id --translations id.json
 ```
 
-This unpacks the archive, collects every `.properties` value and every smali
-`const-string` literal, translates each distinct string once, writes the
-translations back and repacks the archive.
+## Design notes
 
-Useful flags:
-
-| Flag | Effect |
-| --- | --- |
-| `-s, --source` / `-t, --target` | language pair (default `en` → `id`) |
-| `--provider` | `google-web` (default, no key), `google-v2`, `libretranslate`, `none` |
-| `--api-key` | key for `google-v2` / `libretranslate` (or set `TRANSLATE_API_KEY`) |
-| `--dry-run` | translate and report, write no archive |
-| `--translate-all` | disable the skip heuristics (keys, paths and tokens too) |
-| `--no-smali` | only patch `.properties` resources |
-| `--workers`, `--delay` | parallelism and request spacing |
-| `--cache`, `--no-cache` | translation cache control |
-
-Exit codes: `0` success, `1` error, `2` nothing translatable found, `3` nothing
-could be translated.
-
-### Full APK pipeline
-
-```bash
-python apk.py game.apk -t id -o out/
-```
-
-`python apk.py` is the front end for real `.apk` files
-(preflight → apktool decompile → extract → translate → patch → rebuild →
-sign with v1+v2+v3 → verify). It needs a JDK 17 on `PATH`; `apktool` and the
-standalone `uber-apk-signer` are downloaded into `--tools` automatically, so no
-Android SDK is required.
-
-The same flow is available as a library:
-
-`core.GameTranslator.run_full_pipeline()` does the whole flow:
-apktool decompile → extract → translate → patch → rebuild → zipalign → sign,
-then verifies the result is a valid, v2-signed APK.
-
-```python
-from core import GameTranslator
-
-engine = GameTranslator(output_dir="./out")
-engine.target_lang = "id"
-engine.setup_tools("./tools")          # or engine.download_tools("./tools")
-result = engine.run_full_pipeline("game.apk")
-print(result["success"], result["output_apk"])
-```
-
-It needs a JDK on `PATH` plus `apktool`. `apksigner` and `zipalign` are picked up
-from `ANDROID_SDK_ROOT`/`ANDROID_HOME` `build-tools/*`, and
-`download_tools()` fetches apktool and jadx if they are missing.
-
-## Reports
-
-Both entry points write reports you can inspect:
-
-* `found_strings.txt` — every string found, with the file and key it came from
-* `translated_strings.txt` — original → translation, with per-string status
-* `translation_cache.json` — reusable cache; a second run translates nothing
-
-## What is preserved
-
-The patcher is written to be non-destructive:
-
-* `.properties` comments, `=` vs `:` separators, whitespace, `#`/`!` trailing
-  comments and `\` line continuations survive a round trip
-* output is always safe for every Java version: pure-ASCII resources stay
-  ASCII with `\uXXXX` escapes, ISO-8859-1 resources stay ISO-8859-1
-* `%s`, `%1$s`, `{0}`, `$1`, HTML/XML tags, XML entities and `\n`/`\uXXXX`
-  escapes are masked before translation and spliced back in place
-* archive entry order, per-entry compression, timestamps and the position of
-  `META-INF/MANIFEST.MF` are preserved; unmodified entries are copied
-  byte-for-byte
-* Android builds rewrite only the default `res/values/strings.xml` and add
-  `res/values-<lang>/strings.xml`; existing translations in other
-  `values-<other>/` folders are never overwritten
-* inline markup (`<b>`, `<xliff:g>`) stays a tag, while text is XML-escaped
-  exactly once
-
-## Android app
-
-The `app/` module is a real on-device patcher for `.jar` game archives. It is
-built and published by GitHub Actions — nothing needs to be built locally:
-
-* every push and pull request runs the Python test suite, then
-  `assembleDebug assembleRelease`
-* artifacts land in the workflow run
-* pushing a `v*` tag publishes a GitHub Release with the signed APK
-
-What the app does:
-
-1. **Load .jar** — picks a game archive through the system file picker and
-   stages it in private storage.
-2. **Options** — source/target language, translation provider, optional API
-   key, and a "translate everything" toggle.
-3. **Start patching** — runs the same Python engine as the CLI
-   (`patcher.py` + `translator.py` + `main.py`, embedded via Chaquopy) on a
-   background thread, with live progress, a log view, and the output path.
-4. **Output** — the patched archive lands in
-   `<app-external-files>/KuroPatch/` and can be shared to other apps.
-
-`.apk` files are refused with an explanation: the full APK pipeline needs
-apktool, which requires a real JVM and cannot run on Android. For APKs use the
-PC CLI (`python apk.py`).
-
-Build note: the `syncPythonEngine` Gradle task copies the repo-root engine
-(`patcher.py`, `translator.py`, `core.py`, `main.py`, `ui.py`) into
-`app/src/main/python/` before every build, so the APK always embeds the
-current engine. Those copies are git-ignored; `android_bridge.py` is the
-committed Chaquopy entry point.
+- String values are opaque: `%d`, `%1$s`, `<b>` markup and escapes survive
+  round-trips byte-identically (covered by tests).
+- `strings.xml` arrays/plurals map to `name[i]` / `name{q}` keys and regroup
+  on save. Non-translatable resources (colors, dimens) are never touched.
+- Android translations go to `res/values-<lang>/` (proper localization),
+  never overwriting the source `res/values/`.
+- Binary `AndroidManifest.xml` is parsed without apktool; `resources.arsc`
+  is stored uncompressed on repack.
+- The patcher consumes `dict[str, str]`; providers/keys live in
+  `translate/` and are never handled here.
 
 ## Tests
 
 ```bash
-pip install -r requirements.txt
-python -m pytest tests/ -q
+python3 -m unittest discover -s tests
 ```
-
-The suite is fully offline: the translation backend is replaced by a
-deterministic fake, so no test touches the network and none of them need a JDK
-or the Android SDK.
-
-## Layout
-
-| File | Purpose |
-| --- | --- |
-| `main.py` | CLI for JAR/APK resource patching |
-| `patcher.py` | archive handling, `.properties` codec, smali literals |
-| `translator.py` | providers, placeholder masking, retries, cache |
-| `core.py` | full APK pipeline (apktool, rebuild, sign) |
-| `ui.py` | headless UI state machine for the Android shell |
-| `config.json` | tool URLs, providers, keystore and signing settings |
