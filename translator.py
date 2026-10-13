@@ -547,14 +547,19 @@ class TranslatorEngine:
         cursor = 0
         for match in _MASK_RE.finditer(masked):
             chunk = masked[cursor : match.start()]
-            if chunk:
+            if chunk.strip():
                 pieces.append(self._call_provider(chunk))
+            elif chunk:
+                # Whitespace-only between sentinels: keep verbatim, save an API call.
+                pieces.append(chunk)
             pieces.append(tokens[int(match.group(1))])
             cursor = match.end()
 
         tail = masked[cursor:]
-        if tail:
+        if tail.strip():
             pieces.append(self._call_provider(tail))
+        elif tail:
+            pieces.append(tail)
         return "".join(pieces)
 
     def _call_provider(self, text: str) -> str:

@@ -464,9 +464,10 @@ def iter_smali_literals(content: str):
 def patch_smali_literals(content: str, mapping: Dict[str, str]) -> Tuple[str, int, int]:
     """Replace smali literals using ``mapping`` (decoded text -> translation).
 
-    Returns ``(new_content, replaced, unmatched)``. Replacement happens right
-    to left so earlier offsets stay valid, and every literal is compared
-    *decoded* so ``\\u00e9`` and ``é`` match the same entry.
+    Returns ``(new_content, replaced, unmatched)``. Replacements are applied
+    left to right via a single splice pass, so earlier offsets stay valid, and
+    every literal is compared *decoded* so ``\\u00e9`` and ``é`` match the
+    same entry.
     """
     edits: List[Tuple[int, int, str]] = []
     matched: set = set()

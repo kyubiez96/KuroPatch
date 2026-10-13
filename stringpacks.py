@@ -79,14 +79,24 @@ def parse_resource(raw: bytes) -> List[StringPack]:
             start = sbase + off
             if start >= size:
                 raise ValueError(f"string {i} offset out of range at pack {pos}")
-            end = data.index(b"\x00", start)
+            try:
+                end = data.index(b"\x00", start)
+            except ValueError:
+                raise ValueError(
+                    f"string {i} has no NUL terminator (pack at {pos}, offset {start})"
+                ) from None
             strings.append(data[start:end].decode("utf-8", errors="replace"))
         packs.append(StringPack(es=es, strings=strings))
         # Advance past the string data.
         maxend = sbase
         for i in range(count):
             off = int.from_bytes(data[table + i * es : table + (i + 1) * es], "big")
-            maxend = max(maxend, data.index(b"\x00", sbase + off) + 1)
+            try:
+                maxend = max(maxend, data.index(b"\x00", sbase + off) + 1)
+            except ValueError:
+                raise ValueError(
+                    f"string {i} has no NUL terminator (pack at {pos}, offset {sbase + off})"
+                ) from None
         pos = maxend
 
     if not packs:
