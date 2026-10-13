@@ -34,7 +34,7 @@ android {
 }
 
 chaquopy {
-    defaultConfig { version "3.12" }
+    defaultConfig { version "3.11" }
     sourceSets {
         main { python { srcDirs = ["../../core", "../../translate"] } }
     }

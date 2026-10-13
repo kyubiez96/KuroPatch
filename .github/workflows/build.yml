@@ -26,13 +26,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Run unittest (stdlib, no deps)
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run pytest
-        run: python -m pytest tests/ -q
+          python3 -m unittest discover -s translate -p "test_*.py"
+          python3 -m unittest discover -s tests
 
   build:
     name: Build APK
