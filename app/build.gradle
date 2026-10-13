@@ -35,13 +35,29 @@ android {
 
 chaquopy {
     defaultConfig { version "3.11" }
-    sourceSets {
-        main { python { srcDirs = ["../../core", "../../translate"] } }
-    }
 }
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
+}
+
+// Sync Python engine (core/ + translate/) into src/main/python before every
+// build, so the APK always embeds the current engine.
+tasks.register("syncPythonEngine") {
+    outputs.upToDateWhen { false }
+    doLast {
+        def pythonDir = file("src/main/python")
+        delete(pythonDir)
+        mkdir(pythonDir)
+        copy {
+            from(rootDir) { include("core/**", "translate/**") }
+            into(pythonDir)
+        }
+        logger.lifecycle("Synced Python engine into ${pythonDir}")
+    }
+}
+tasks.named("preBuild").configure {
+    dependsOn("syncPythonEngine")
 }
