@@ -107,17 +107,40 @@ class MainActivity : AppCompatActivity() {
         thread {
             try {
                 val py = Python.getInstance()
-                val core = py.getModule("core.apk")
+                val apkMod = py.getModule("core.apk")
                 val stringsMod = py.getModule("core.strings")
                 val tmp = File(cacheDir, "extract").apply { mkdirs() }
-                copyToCache(uri, File(tmp, apkName))
-                val info = core.callAttr("extract_apk",
-                    File(tmp, apkName).absolutePath,
-                    tmp.absolutePath)
-                @Suppress("UNCHECKED_CAST")
-                extractedStrings = stringsMod.callAttr(
-                    "discover_strings", tmp.absolutePath)
-                    .asList().associate { it.toString() to it.toString() }
+                val apkFile = File(tmp, apkName)
+                copyToCache(uri, apkFile)
+                val outDir = File(tmp, "unpacked").apply { mkdirs() }
+                apkMod.callAttr("extract_apk",
+                    apkFile.absolutePath, outDir.absolutePath)
+                // walk unpacked tree for string resource files
+                val found = mutableMapOf<String, String>()
+                outDir.walkTopDown()
+                    .filter { f ->
+                        f.isFile && (f.name.endsWith(".xml")
+                            || f.name.endsWith(".properties")
+                            || f.name.endsWith(".stringpack"))
+                    }
+                    .forEach { f ->
+                        try {
+                            val entries = stringsMod
+                                .callAttr("load_strings", f.absolutePath)
+                                .asList()
+                            for (e in entries) {
+                                val translatable =
+                                    e.get("translatable")?.toString() != "False"
+                                if (!translatable) continue
+                                val key = e.get("key")?.toString() ?: continue
+                                val value = e.get("value")?.toString() ?: continue
+                                found[key] = value
+                            }
+                        } catch (_: Exception) {
+                            // skip files that fail to parse
+                        }
+                    }
+                extractedStrings = found
                 runOnUiThread {
                     setBusy(false)
                     binding.tvStatus.text =
@@ -141,6 +164,10 @@ class MainActivity : AppCompatActivity() {
             return
         }
         setBusy(true, "Translating…")
+        // export BYOK key so Chaquopy Python (os.environ) can read it
+        try {
+            android.system.Os.setenv("AGNES_API_KEY", getAgnesKey(), true)
+        } catch (_: Exception) { }
         thread {
             try {
                 val py = Python.getInstance()
@@ -156,7 +183,8 @@ class MainActivity : AppCompatActivity() {
                     extractedStrings, langCode(), "en", provider)
                 val done = engine.callAttr("results_to_dict", results)
                 @Suppress("UNCHECKED_CAST")
-                val translated = done.asMap().mapValues { it.value.toString() }
+                val translated: Map<String, String> = done.asMap()
+                    .map { it.key.toString() to it.value.toString() }.toMap()
                 runOnUiThread {
                     setBusy(false)
                     val n = translated.size
@@ -184,10 +212,11 @@ class MainActivity : AppCompatActivity() {
                 val py = Python.getInstance()
                 val patcher = py.getModule("core.patcher")
                 val outDir = File(cacheDir, "output").apply { mkdirs() }
+                val apkFile = File(File(cacheDir, "extract"), apkName)
                 val outApk = File(outDir, apkName.replace(".apk", "-id.apk"))
                 patcher.callAttr("patch_apk",
-                    File(File(cacheDir, "extract"), apkName).absolutePath,
-                    translatedStrings, langCode(), outApk.absolutePath)
+                    apkFile.absolutePath, translatedStrings,
+                    outApk.absolutePath, langCode())
                 runOnUiThread {
                     setBusy(false)
                     binding.tvStatus.text = "Done: ${outApk.name}"
