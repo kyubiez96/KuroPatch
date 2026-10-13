@@ -174,10 +174,9 @@ class MainActivity : AppCompatActivity() {
                 val engine = py.getModule("translate.engine")
                 val providers = py.getModule("translate.providers")
                 val provider = if (providerName() == "agnes") {
-                    val cls = providers.get("AgnesProvider")
-                    cls.callAttr("__call__")
+                    providers.get("AgnesProvider")!!.callAttr("__call__")
                 } else {
-                    providers.get("PassthroughProvider").callAttr("__call__")
+                    providers.get("PassthroughProvider")!!.callAttr("__call__")
                 }
                 val results = engine.callAttr("translate_strings",
                     extractedStrings, langCode(), "en", provider)
