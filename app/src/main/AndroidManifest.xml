@@ -2,30 +2,19 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
-
-    <!--
-      External storage permissions are capped at API 32: from API 33 the
-      platform uses scoped storage and these become no-ops.
-    -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission
-        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
     <application
         android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.KuroPatch">
+        android:theme="@style/Theme.Material3.Dark.NoActionBar">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -33,22 +22,5 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".PreviewActivity"
-            android:exported="false"
-            android:label="@string/preview_title"
-            android:windowSoftInputMode="adjustResize" />
-
-        <!-- Shares the patched .jar with other apps. Authorities use the build's
-          applicationId so the debug suffix does not break sharing. -->
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
     </application>
 </manifest>
