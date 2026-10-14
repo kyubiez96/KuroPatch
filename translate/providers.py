@@ -263,9 +263,16 @@ class AgnesProvider(BaseProvider):
                 # decode error) is connection flakiness, not a
                 # permanent failure -- it used to bypass the
                 # transient-recovery path as a plain RuntimeError.
-                self._on_rate_limited()
-                raise TransientProviderError(
-                    f"agnes provider request failed: {exc}") from exc
+                # Retry INSIDE the loop like a retryable HTTP error
+                # (Argon review: raising immediately gave the string
+                # 1 attempt instead of 4, and _on_rate_limited() here
+                # wrongly penalized the throttle for a non-rate-limit
+                # error). On exhaustion, Transient WITHOUT throttle
+                # penalty -- a decode error is not rate-limit signal.
+                if attempt >= _MAX_PROVIDER_RETRIES:
+                    raise TransientProviderError(
+                        f"agnes provider request failed: {exc}") from exc
+                _sleep(_retry_delay(attempt, None))
             except Exception as exc:
                 raise RuntimeError(
                     f"agnes provider request failed: {exc}") from exc

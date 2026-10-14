@@ -193,6 +193,14 @@ def should_skip(text):
     s = text.strip()
     if not s:
         return True, "empty"
+    # Lone surrogates (U+D800-U+DFFF) are not valid Unicode text --
+    # they arrive via surrogateescape decoding of non-UTF-8 bytes
+    # (string packs, smali). They cannot be translated (JSON/Chaquopy
+    # would mangle them); skip so they round-trip byte-identical.
+    # Complements the surrogateescape round-trip fix: preserve bytes,
+    # never translate garbage. (Argon review on Luna's fix.)
+    if any(0xD800 <= ord(c) <= 0xDFFF for c in text):
+        return True, "surrogate"
     # Bare ISO language code ("EN", "es", "ENG") -- a language tag, never
     # UI text. Checked before the number rule: "DE" would otherwise be
     # misclassified as a hex "number".

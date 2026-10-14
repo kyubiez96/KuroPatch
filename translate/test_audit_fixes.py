@@ -556,5 +556,64 @@ class TestThrottleSkipAfterRecovery(unittest.TestCase):
         self.assertEqual(sleeps, [0.6, 0.6, 10.0])
 
 
+class TestArgonReviewFollowups(unittest.TestCase):
+    """Argon review of the 26-finding fix batch (2026-10-14).
+
+    3 of 6 review notes verified REAL and fixed here; 3 DISPUTED
+    with evidence (see comments):
+    - REAL: ValueError in _fetch raised immediately (1 attempt, not 4)
+      + wrongly doubled the throttle. Now retries in-loop, no
+      throttle penalty on exhaustion.
+    - REAL: _reapply_whitespace doubled an all-whitespace source
+      (leading == trailing == whole string). Now early-returns.
+    - REAL: surrogateescape (Luna's pack fix) let lone surrogates
+      flow into the translation pipeline. Guard now skips them.
+    - DISPUTED: empty-translation bypass -- validator rejects with
+      `not translation.strip()`, so a whitespace-only re-applied
+      reply still fails `<empty>`. No fix needed.
+    - DISPUTED: whitespace-check tautology -- intentional, documented
+      design (engine repairs, validator is the safety net for direct
+      callers). Interior \\n reflow is still caught.
+    - DISPUTED: escape_key missing \\t/\\f/leading space -- the base
+      escape_value already emits \\t, \\f and "\\ " for those.
+      No fix needed.
+    """
+
+    def test_value_error_retries_in_loop_without_throttle_penalty(self):
+        import urllib.request
+        attempts = []
+        sleeps = []
+        orig_urlopen = urllib.request.urlopen
+        orig_psleep = providers_mod._sleep
+        def fake_urlopen(req, timeout=None):
+            attempts.append(1)
+            raise ValueError("bad json")
+        urllib.request.urlopen = fake_urlopen
+        providers_mod._sleep = sleeps.append
+        try:
+            os.environ["AGNES_API_KEY"] = "dummy-for-test"
+            p = AgnesProvider()
+            base = p.throttle_seconds
+            with self.assertRaises(TransientProviderError):
+                p.translate("Hello world")
+        finally:
+            urllib.request.urlopen = orig_urlopen
+            providers_mod._sleep = orig_psleep
+            os.environ.pop("AGNES_API_KEY", None)
+        self.assertEqual(len(attempts), 4)  # 1 initial + 3 retries
+        self.assertEqual(sleeps, [1, 2, 4])
+        self.assertEqual(p.throttle_seconds, base)  # no rate-limit penalty
+
+    def test_reapply_whitespace_all_whitespace_source(self):
+        self.assertEqual(
+            engine_mod._reapply_whitespace("   ", "  x  "), "  x  ")
+
+    def test_guard_skips_lone_surrogates(self):
+        skip, reason = should_skip("bad\udc80text")
+        self.assertTrue(skip)
+        self.assertEqual(reason, "surrogate")
+        self.assertFalse(should_skip("Hello world")[0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -65,6 +65,12 @@ def _reapply_whitespace(source, translation):
     """
     if not isinstance(translation, str) or not isinstance(source, str):
         return translation
+    if not source.strip():
+        # All-whitespace source: there are no edges to re-apply --
+        # leading would equal trailing == the whole string, doubling
+        # it (Argon review). The guard skips such strings before this
+        # is reached; direct callers get the translation untouched.
+        return translation
     leading = source[:len(source) - len(source.lstrip())]
     trailing = source[len(source.rstrip()):]
     return leading + translation.strip() + trailing
