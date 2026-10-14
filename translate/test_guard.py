@@ -151,7 +151,16 @@ class TestExtractPlaceholders(unittest.TestCase):
         self.assertEqual(extract_placeholders("Pad: %-10s!"), ["%-10s"])
         self.assertEqual(extract_placeholders("Signed: %+d"), ["%+d"])
         self.assertEqual(extract_placeholders("Grouped: %,d"), ["%,d"])
-        self.assertEqual(extract_placeholders("Space: % d"), ["% d"])
+
+    def test_percent_word_not_printf(self):
+        # Round-4 audit: the space flag made "% <word>" match as a
+        # printf spec -- "100% sure" extracted "% s", so the
+        # translation "100% yakin" (extracting "% y") FAILED
+        # validation and the string stayed untranslated. The space
+        # flag is deliberately absent now: a genuine "% d" spec is
+        # far rarer than "N% word" natural text.
+        for s in ["100% sure", "100% complete", "50% off", "Space: % d"]:
+            self.assertEqual(extract_placeholders(s), [], s)
 
     def test_printf_all_conversions(self):
         # %b %B %h %H %t %T were missing from the old class.

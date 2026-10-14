@@ -112,6 +112,7 @@ class MainActivity : AppCompatActivity() {
         // which would have patched jar B with jar A's strings).
         extractedStrings = emptyMap()
         translatedStrings = emptyMap()
+        translatedLangCode = ""
         // A new pick also invalidates the previous PATCH output:
         // Save / Share must not keep serving jar A's file after the
         // user has moved on to jar B (stale-output bug).
@@ -233,6 +234,7 @@ class MainActivity : AppCompatActivity() {
         // A fresh extraction invalidates translations from any
         // previous jar -- they must not survive to the patch step.
         translatedStrings = emptyMap()
+        translatedLangCode = ""
         binding.btnPatch.isEnabled = false
         setBusy(true, "Extracting strings…")
         thread {
@@ -299,11 +301,18 @@ class MainActivity : AppCompatActivity() {
                     .map { it.key.toString() to it.value.toString() }.toMap()
                 safeUi {
                     setBusy(false)
+                    // "Translated" counts only strings whose text actually
+                    // changed: skipped/glossary-verbatim entries are not
+                    // translations, and reporting them as such ("97
+                    // strings translated" when 72 are verbatim) misleads.
                     val n = translated.size
-                    binding.tvStatus.text = "$n strings translated"
+                    val changed = translated.count { (k, v) -> k != v }
+                    binding.tvStatus.text =
+                        "$changed strings translated, ${n - changed} unchanged"
                     binding.btnPatch.isEnabled = true
                     // stash for patch step
                     translatedStrings = translated
+                    translatedLangCode = langCode()
                 }
             } catch (e: Exception) {
                 safeUi {
@@ -315,6 +324,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var translatedStrings: Map<String, String> = emptyMap()
+    /** Language the current translations were made for. The output
+     * filename must use THIS, not the spinner's current value: if the
+     * user switches language after translating, patching with the
+     * spinner value would mislabel e.g. Indonesian output as _en. */
+    private var translatedLangCode: String = ""
 
     private fun patchJar() {
         if (translatedStrings.isEmpty()) return
@@ -335,7 +349,9 @@ class MainActivity : AppCompatActivity() {
                 // always ends with ".jar" so restore/save can find it.
                 val base = if (jarName.endsWith(".jar", ignoreCase = true))
                     jarName.dropLast(4) else jarName
-                val outJar = File(outDir, "${base}_${langCode()}.jar")
+                // Filename uses the TRANSLATE-time language, not the
+                // spinner's current value (see translatedLangCode).
+                val outJar = File(outDir, "${base}_${translatedLangCode}.jar")
                 jarMod.callAttr("patch_jar",
                     jarFile.absolutePath, toPyDict(py, translatedStrings),
                     outJar.absolutePath)
@@ -364,7 +380,10 @@ class MainActivity : AppCompatActivity() {
     private fun launchSaveDialog() {
         val src = patchedJar
         if (src == null || !src.exists()) {
-            showError("Nothing to save", "Patch a .jar first.")
+            // The file may have been deleted externally after a
+            // successful patch -- "patch again" is the true remedy,
+            // not "patch a .jar first" (they already did).
+            showError("Nothing to save", "Patched .jar is gone — patch again.")
             return
         }
         savePatched.launch(src.name)
@@ -433,12 +452,23 @@ class MainActivity : AppCompatActivity() {
         }
         MaterialAlertDialogBuilder(this)
             .setTitle("Agnes API key (BYOK)")
-            .setMessage("Your key stays on this device only.")
+            .setMessage("Paste your Agnes API key. Get a free key from " +
+                "your Agnes AI account (apihub.agnes-ai.com). " +
+                "Your key stays on this device only.")
             .setView(input)
             .setPositiveButton("Save") { _, _ ->
+                val key = input.text.toString().trim()
+                // Blank Save must NOT save "" and recurse into
+                // translateStrings() -> promptAgnesKey() again with no
+                // explanation (an infinite no-feedback loop). Tell the
+                // user, stay put; tapping Translate re-opens the prompt.
+                if (key.isEmpty()) {
+                    Toast.makeText(this, "API key cannot be empty",
+                        Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
                 getSharedPreferences("kuropatch", MODE_PRIVATE).edit()
-                    .putString("agnes_key",
-                        input.text.toString().trim()).apply()
+                    .putString("agnes_key", key).apply()
                 // export for Chaquopy
                 translateStrings()
             }
