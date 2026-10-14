@@ -20,6 +20,9 @@ android {
 
     buildTypes {
         release {
+            // Debug signing so assembleRelease produces app-release.apk
+            // (without this AGP 8 emits app-release-unsigned.apk instead).
+            signingConfig signingConfigs.debug
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
         }
