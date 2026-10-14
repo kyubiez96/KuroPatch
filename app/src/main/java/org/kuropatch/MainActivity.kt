@@ -143,7 +143,9 @@ class MainActivity : AppCompatActivity() {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "*/*"
             putExtra(Intent.EXTRA_MIME_TYPES,
-                arrayOf("application/java-archive", "application/octet-stream"))
+                // application/zip: many file managers label .jar files as
+                // ZIP -- without it those files are hidden by the picker.
+                arrayOf("application/java-archive", "application/zip", "application/octet-stream"))
         }
         pickJar.launch(intent)
     }

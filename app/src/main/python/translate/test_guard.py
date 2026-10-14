@@ -132,12 +132,57 @@ class TestExtractPlaceholders(unittest.TestCase):
         self.assertEqual(extract_placeholders("%1$s killed %2$d"),
                          ["%1$s", "%2$d"])
 
+    def test_printf_flags_width_precision(self):
+        # Haiku audit: the old narrow class was blind to these -- a
+        # translation dropping "%05.2f" passed validation and the
+        # patched game crashed in String.format().
+        self.assertEqual(extract_placeholders("Score: %05.2f"), ["%05.2f"])
+        self.assertEqual(extract_placeholders("Pad: %-10s!"), ["%-10s"])
+        self.assertEqual(extract_placeholders("Signed: %+d"), ["%+d"])
+        self.assertEqual(extract_placeholders("Grouped: %,d"), ["%,d"])
+        self.assertEqual(extract_placeholders("Space: % d"), ["% d"])
+
+    def test_printf_all_conversions(self):
+        # %b %B %h %H %t %T were missing from the old class.
+        for ph in ["%b", "%B", "%h", "%H", "%tY", "%TY", "%c", "%%"]:
+            self.assertEqual(extract_placeholders(f"X {ph} Y"), [ph])
+
+    def test_gameloft_codes(self):
+        # v1 masked these (protect_segments); v2 has no masking, so
+        # validation must at least SEE them.
+        self.assertEqual(extract_placeholders("A\\p1 B"), ["\\p1"])
+        self.assertEqual(extract_placeholders("A\\v600 B"), ["\\v600"])
+        self.assertEqual(extract_placeholders("A\\m12\\m B"), ["\\m12\\m"])
+        self.assertEqual(extract_placeholders("A\\f34\\f B"), ["\\f34\\f"])
+        # Lone "]" is ordinary punctuation, NOT a placeholder (see
+        # _FORMAT_RE note): a translation adding brackets must pass.
+        self.assertEqual(extract_placeholders("A]B"), [])
+        self.assertEqual(extract_placeholders("A\\x B"), ["\\x"])
+        self.assertEqual(extract_placeholders("A\\d B"), ["\\d"])
+
+    def test_escapes_and_tags(self):
+        self.assertEqual(extract_placeholders("A\\u0041 B"), ["\\u0041"])
+        self.assertEqual(extract_placeholders("A\\n B"), ["\\n"])
+        self.assertEqual(extract_placeholders("<b>Hello</b>"),
+                         ["<b>", "</b>"])
+        # stray "<" is not a tag
+        self.assertEqual(extract_placeholders("a < b"), [])
+
     def test_braces(self):
         self.assertEqual(extract_placeholders("Hi {name}!"), ["{name}"])
         self.assertEqual(extract_placeholders("Item {0} of {1}"), ["{0}", "{1}"])
 
     def test_none(self):
         self.assertEqual(extract_placeholders("plain text"), [])
+
+    def test_non_string(self):
+        self.assertEqual(extract_placeholders(None), [])
+        self.assertEqual(extract_placeholders(12345), [])
+
+    def test_non_string_skipped(self):
+        skip, reason = should_skip(12345)
+        self.assertTrue(skip)
+        self.assertEqual(reason, "non-string")
 
 
 if __name__ == "__main__":

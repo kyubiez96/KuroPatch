@@ -128,7 +128,19 @@ def escape_value(text: str, charset: str = "utf-8") -> str:
             try:
                 char.encode(charset)
             except UnicodeEncodeError:
-                piece = "\\u%04x" % ord(char)
+                code = ord(char)
+                if code > 0xFFFF:
+                    # Astral-plane char (emoji, ...): a bare \uXXXXX
+                    # is FIVE hex digits, which Java reads as \uXXXX
+                    # + a literal digit -- corrupted output. Emit the
+                    # UTF-16 surrogate pair instead.
+                    code -= 0x10000
+                    piece = "\\u%04x\\u%04x" % (
+                        0xD800 + (code >> 10),
+                        0xDC00 + (code & 0x3FF),
+                    )
+                else:
+                    piece = "\\u%04x" % code
             else:
                 piece = char
 
@@ -266,7 +278,10 @@ class PropertiesFile:
             # next physical line.
             consumed = 1
             while _ends_with_continuation(value_part) and index + consumed < len(lines):
-                nxt = lines[index + consumed].rstrip("\r\n")
+                # Java's Properties.load skips ALL leading whitespace
+                # on a continuation line -- keeping it (the old
+                # behaviour) silently changed the value's spacing.
+                nxt = lines[index + consumed].rstrip("\r\n").lstrip(" \t\f")
                 value_part = value_part[:-1] + nxt
                 consumed += 1
                 multiline = True
@@ -382,7 +397,12 @@ class PropertiesFile:
         while index < len(physical):
             if index in replacements:
                 line = physical[index]
-                newline = "\r\n" if line.endswith("\r\n") else ("\n" if line.endswith("\n") else "")
+                newline = (
+                    "\r\n"
+                    if line.endswith("\r\n")
+                    else ("\n" if line.endswith("\n") else ("\r" if line.endswith("\r") else ""))
+                )  # \r-only (old Mac) files kept their terminator: the old
+                # "" fallback silently JOINED lines on rewrite.
                 rebuilt.append(replacements[index] + newline)
                 index += spans.get(index, 1)
                 continue
@@ -587,9 +607,17 @@ def _parse_constant_pool(data: bytes) -> Tuple[Dict[int, Tuple[int, str]], set]:
             pos += 3
         elif tag == 15:  # MethodHandle
             pos += 4
-        elif tag in (3, 4, 9, 10, 11, 12, 17, 18):
+        elif tag in (9, 10, 11, 12):  # Field/Method/InterfaceMethod/NameAndType
             code_refs.add(int.from_bytes(data[pos + 1 : pos + 3], "big"))
             code_refs.add(int.from_bytes(data[pos + 3 : pos + 5], "big"))
+            pos += 5
+        elif tag in (17, 18):  # Dynamic / InvokeDynamic: the FIRST u2 is a
+            # bootstrap-method index, NOT a pool ref -- adding it
+            # wrongly excluded a String Utf8 whose index coincided.
+            code_refs.add(int.from_bytes(data[pos + 3 : pos + 5], "big"))
+            pos += 5
+        elif tag in (3, 4):  # Integer / Float: 4-byte VALUE, not refs --
+            # its bytes must never be mistaken for pool indices.
             pos += 5
         elif tag in (5, 6):  # Long, Double: occupy two pool slots
             pos += 9

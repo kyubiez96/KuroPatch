@@ -32,7 +32,11 @@ class TranslationCache:
         if os.path.exists(self.path):
             try:
                 with open(self.path, "r", encoding="utf-8") as fh:
-                    self._data = json.load(fh)
+                    data = json.load(fh)
+                # A cache file containing a JSON list / string / number
+                # is corrupt -- .get() on it crashed with AttributeError.
+                # Treat it like a missing cache, not a fatal error.
+                self._data = data if isinstance(data, dict) else {}
             except (json.JSONDecodeError, OSError):
                 self._data = {}
 

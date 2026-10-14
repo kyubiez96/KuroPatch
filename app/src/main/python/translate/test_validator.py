@@ -34,6 +34,31 @@ class TestValidate(unittest.TestCase):
         r = validate("%1$s killed %2$d", "%1$s membunuh")
         self.assertFalse(r)
 
+    def test_empty_translation_rejected(self):
+        # Haiku audit: "" used to PASS (no placeholders in, none out)
+        # and ship as a blanked-out game string.
+        self.assertFalse(validate("Hello", ""))
+        self.assertFalse(validate("Hello", "   "))
+        self.assertFalse(validate("Hello", None))
+        # ...but an empty source translating to empty is still fine.
+        self.assertTrue(validate("", ""))
+
+    def test_printf_width_preserved(self):
+        self.assertTrue(validate("Score: %05.2f", "Skor: %05.2f"))
+        self.assertFalse(validate("Score: %05.2f", "Skor: "))
+        self.assertTrue(validate("Enabled: %b", "Diaktifkan: %b"))
+        self.assertFalse(validate("Enabled: %b", "Diaktifkan: "))
+
+    def test_gameloft_codes_preserved(self):
+        self.assertTrue(validate("A\\p1 B", "A\\p1 B"))
+        self.assertFalse(validate("A\\p1 B", "A B"))
+        self.assertTrue(validate("A\\m12\\m B", "A\\m12\\m B"))
+        self.assertFalse(validate("A\\m12\\m B", "A\\m99\\m B"))
+
+    def test_tags_preserved(self):
+        self.assertTrue(validate("<b>Hello</b>", "<b>Halo</b>"))
+        self.assertFalse(validate("<b>Hello</b>", "Halo"))
+
     def test_swapped_order_rejected(self):
         # Same multiset, wrong order: killer/victim swapped. Must fail.
         r = validate("%1$s killed %2$d", "%2$d membunuh %1$s")

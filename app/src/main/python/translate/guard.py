@@ -13,10 +13,39 @@ _DIMENSION_RE = re.compile(
 )
 
 # Format specifiers: %d %s %f %1$s %2$d, and {name} {0} {count}
+#
+# The printf alternative is v1's full pattern (flags / width /
+# precision / EVERY conversion): the old narrow class
+# [diuoxXfFeEgGaAcspn%] was blind to "%05.2f", "%-10s", "%+d",
+# "%b", "%h", "%tY" -- a translation that DROPPED such a spec
+# passed validation, and the patched game would crash in
+# String.format() (MissingFormatArgumentException). Anything the
+# validator cannot see, it cannot protect.
+#
+# Gameloft pack codes (\p1, \v600, \m..\m, \f..\f, ], \x, \n, \d),
+# \uXXXX / \n-style escapes and HTML/XML tags are in the same
+# position: v1 masked them before translation (protect_segments);
+# v2 has no masking, so they MUST at least be visible to validation.
+# Order matters: the paired \m..\m / \f..\f forms come before the
+# single-code form so the whole code (parameter included) is one
+# placeholder -- otherwise a changed parameter would pass.
 _FORMAT_RE = re.compile(
-    r"%(?:\d+\$)?[diuoxXfFeEgGaAcspn%]"    # printf-style
-    r"|\{[a-zA-Z_][a-zA-Z0-9_]*\}"         # {name}
-    r"|\{\d+\}"                            # {0}
+    r"%[tT][HIklMSLNpzZsQBbhAaCYyjmdeRTrDFc]"  # Java date/time: %tY is ONE spec -- the suffix matters
+    r"|%(?:\d+\$)?[-#+ 0,(]*\d*(?:\.\d+)?[a-zA-Z%]"  # printf: flags/width/precision + any conversion
+    r"|\\m..\\m|\\f..\\f"                   # Gameloft paired codes (\m12\m, \f34\f)
+    r"|\\(?:[mfxnd]|p[1278]|v\d+)"          # Gameloft single codes (\p1, \v600, \x, \n, \d)
+    r"|\\u[0-9a-fA-F]{4}"                   # \uXXXX escapes
+    r"|\\[nrtfb\\\\]"                       # \n \r \t \f \b \\ escapes
+    # NOTE: Gameloft's lone "]" (line-break marker) is DELIBERATELY
+    # not a placeholder: "]" is ordinary punctuation in most strings,
+    # and treating it as one caused false failures (any translation
+    # that legitimately ADDS a bracket, e.g. "Tekan [A]", failed the
+    # extra-check). A dropped pack "]" only merges dialogue lines
+    # (cosmetic, not a crash); the distinctive codes above stay
+    # protected.
+    r"|</?[A-Za-z][^<>]*>"                  # HTML/XML tags
+    r"|\{[a-zA-Z_][a-zA-Z0-9_]*\}"          # {name}
+    r"|\{\d+\}"                             # {0}
 )
 
 # Pure numbers (int, float, with separators): 123, 1.5, 1,000.
@@ -118,6 +147,11 @@ def should_skip(text):
     """
     if text is None:
         return True, "null"
+    if not isinstance(text, str):
+        # A non-string value (int, None, ...) must never reach
+        # text.strip() -- that was an AttributeError crash in
+        # translate_strings for plain-dict callers.
+        return True, "non-string"
     s = text.strip()
     if not s:
         return True, "empty"
@@ -154,4 +188,6 @@ def should_skip(text):
 
 def extract_placeholders(text):
     """Return the ordered list of format placeholders found in text."""
+    if not isinstance(text, str):
+        return []
     return _FORMAT_RE.findall(text)

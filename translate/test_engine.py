@@ -34,6 +34,22 @@ class BadProvider(BaseProvider):
         raise RuntimeError("boom")
 
 
+class EmptyProvider(BaseProvider):
+    """Returns an empty string -- must never ship as a translation."""
+    name = "empty"
+
+    def translate(self, text, source_lang="en", target_lang="id"):
+        return ""
+
+
+class NoneProvider(BaseProvider):
+    """Returns None -- must not crash validation with TypeError."""
+    name = "none"
+
+    def translate(self, text, source_lang="en", target_lang="id"):
+        return None
+
+
 class TestEngine(unittest.TestCase):
     def test_passthrough_default(self):
         res = translate_strings({"k1": "Hello"})
@@ -120,6 +136,27 @@ class TestEngine(unittest.TestCase):
         res = translate_strings({"k": "Hello"}, provider=BadProvider())
         self.assertEqual(res[0].status, "failed")
         self.assertEqual(res[0].translation, "Hello")
+
+    def test_empty_translation_never_ships(self):
+        # Haiku audit: "" used to come back status=translated and
+        # blank out the game string. Now: failed, source kept.
+        res = translate_strings({"k": "Hello world"},
+                                provider=EmptyProvider(), max_retries=0)
+        self.assertEqual(res[0].status, "failed")
+        self.assertEqual(res[0].translation, "Hello world")
+
+    def test_none_translation_no_crash(self):
+        res = translate_strings({"k": "Hello world"},
+                                provider=NoneProvider(), max_retries=0)
+        self.assertEqual(res[0].status, "failed")
+        self.assertEqual(res[0].translation, "Hello world")
+
+    def test_non_string_input_no_crash(self):
+        # Plain-dict callers can pass non-string values; the old code
+        # crashed in text.strip() (AttributeError).
+        res = translate_strings({"k": 12345})
+        self.assertEqual(res[0].status, "skipped")
+        self.assertEqual(res[0].translation, 12345)
 
     def test_results_to_dict(self):
         res = translate_strings({"a": "Hi", "b": "1080x1920"},

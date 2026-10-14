@@ -35,7 +35,19 @@ def validate(source, translation):
     multiplicity: "%1$s killed %2$d" translated as "%2$d membunuh %1$s"
     has the right multiset but the wrong meaning -- the killer and the
     victim are swapped. Ordered comparison catches that.
+
+    An empty / whitespace-only / non-string translation of a non-empty
+    source is NEVER valid -- it used to pass (no placeholders in, none
+    out) and ship as a blanked-out game string, and a None translation
+    crashed here with TypeError. Reject it so the engine retries, then
+    marks the string failed and keeps the source.
     """
+    if not isinstance(source, str):
+        source = ""
+    if not isinstance(translation, str) or (
+        not translation.strip() and source.strip()
+    ):
+        return ValidationResult(ok=False, missing=["<empty>"])
     src_list = extract_placeholders(source)
     dst_list = extract_placeholders(translation)
     if src_list == dst_list:

@@ -116,6 +116,18 @@ class TestCache(unittest.TestCase):
             c = TranslationCache(p)
             self.assertEqual(len(c), 0)
 
+    def test_non_dict_json_recovers(self):
+        # Haiku audit: a cache file containing a JSON list/string
+        # crashed .get() with AttributeError (no .get on list).
+        for payload in ['["not", "a", "dict"]', '"just a string"', "42"]:
+            with tempfile.TemporaryDirectory() as d:
+                p = os.path.join(d, "t.json")
+                with open(p, "w") as fh:
+                    fh.write(payload)
+                c = TranslationCache(p)
+                self.assertEqual(len(c), 0)
+                self.assertIsNone(c.get("hi", "en", "id", "agnes"))
+
 
 if __name__ == "__main__":
     unittest.main()

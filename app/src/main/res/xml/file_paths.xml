@@ -2,6 +2,11 @@
 <paths>
     <!-- Patched archives live under <external-files>/KuroPatch/. -->
     <external-files-path name="output" path="KuroPatch/" />
+    <!-- Same dir under INTERNAL files: when external storage is
+      unavailable the app falls back to filesDir/KuroPatch/, and
+      without this root Share via FileProvider throws
+      IllegalArgumentException ("Failed to find configured root"). -->
+    <files-path name="output-internal" path="KuroPatch/" />
     <!-- Staging dir for the picked input file. -->
     <files-path name="input" path="input/" />
 </paths>

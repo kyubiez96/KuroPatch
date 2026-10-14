@@ -273,5 +273,49 @@ class TestJarPipeline(unittest.TestCase):
         self.assertEqual(reason, "empty")
 
 
+class TestPropertiesEdgeCases(unittest.TestCase):
+    def test_continuation_strips_leading_whitespace(self):
+        # Haiku audit: Java's Properties.load skips ALL leading
+        # whitespace on a continuation line; KuroPatch kept it.
+        from core.patcher import PropertiesFile
+        pf = PropertiesFile.loads(b"key=first \\\n    second\n")
+        self.assertEqual(pf.entries[0].value, "first second")
+
+    def test_cr_only_line_endings_preserved(self):
+        # Haiku audit: to_bytes() gave "" for \r-only lines, JOINING
+        # them on rewrite (corruption of old-Mac .properties files).
+        from core.patcher import PropertiesFile
+        pf = PropertiesFile.loads(b"key=old\rkey2=v2\r")
+        for entry in pf.entries:
+            if entry.key == "key":
+                entry.value = "new"
+        self.assertEqual(pf.to_bytes(), b"key=new\rkey2=v2\r")
+
+    def test_escape_value_astral_surrogate_pair(self):
+        # Haiku audit: emoji -> \u1f600 (FIVE hex digits), which Java
+        # reads as \u1f60 + literal "0". Must be a surrogate pair.
+        from core.patcher import escape_value, unescape
+        self.assertEqual(escape_value("\U0001F600", "ascii"),
+                         "\\ud83d\\ude00")
+        # Java strings ARE UTF-16, so a surrogate pair is the correct
+        # representation there: unescape yields the two code units.
+        self.assertEqual(unescape("\\ud83d\\ude00"), "\ud83d\ude00")
+
+    def test_integer_value_bytes_not_pool_refs(self):
+        # Haiku audit: Integer/Float payload bytes were added to
+        # code_refs as if they were pool indices, wrongly excluding a
+        # String Utf8 whose index coincided (missed translation).
+        from core.patcher import _parse_constant_pool
+        raw = b"Hello"
+        cp = struct.pack(">H", 4)
+        cp += b"\x01" + struct.pack(">H", len(raw)) + raw  # #1 Utf8
+        cp += b"\x08" + struct.pack(">H", 1)  # #2 String -> #1
+        cp += b"\x03" + struct.pack(">I", 0x00010000)  # #3 Integer
+        data = b"\xca\xfe\xba\xbe" + struct.pack(">HH", 0, 52) + cp
+        data += struct.pack(">HHHHHH", 0x0021, 2, 2, 0, 0, 0)
+        _utf8, string_only = _parse_constant_pool(data)
+        self.assertIn(1, string_only)
+
+
 if __name__ == "__main__":
     unittest.main()
