@@ -24,13 +24,15 @@ distinguishes them, and on-device v2.0.11 the OLD Kotlin dialog gate
 (26) > 0. The 429 attribution is plausible (431 strings, no throttle,
 ~46 calls/min observed) but NOT proven from counts alone.
 
-OPEN ADVERSARIAL FINDING (throttle value): the fix paces calls at
-throttle_seconds = 0.6 (100 calls/min). Behaviour verified (engine
-sleeps before every provider call). But the VALUE is unjustified
-against any stated free-tier limit: if apihub's limit is ~20 RPM,
-0.6s is 5x too fast and the batch will still burn both recoveries
-then mass-fail (delayed, not prevented). The value needs apihub's
-documented limit, or the throttle must adapt (double on each 429).
+OPEN ADVERSARIAL FINDING (throttle value) -- RESOLVED (audit MED A3):
+the old fixed throttle_seconds = 0.6 (100 calls/min) was unjustified
+against any stated free-tier limit. The throttle is now ADAPTIVE:
+base 6.0s (the strictest end of the conflicting secondary sources --
+no authoritative vendor limit was found), doubling on every 429/5xx
+signal (cap 30s), decaying back toward base on clean success. The
+value needs no single documented limit -- adaptation covers the
+range. Proven by test_always_429_bounded_attempts (doubling sequence
+12, 24, 30) and the provider-level adaptation tests.
 """
 
 import os
@@ -51,7 +53,7 @@ class _AlwaysRaisingProvider(BaseProvider):
         self.exc = exc
         self.calls = 0
 
-    def translate(self, text, source_lang="en", target_lang="id"):
+    def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
         self.calls += 1
         raise self.exc
 
@@ -156,12 +158,18 @@ class TestRetryTerminatesEndToEnd(unittest.TestCase):
             os.environ.pop("AGNES_API_KEY", None)
         self.assertEqual(len(attempts), 36)
         self.assertEqual(provider_sleeps, [1, 2, 4] * 9)
-        # Engine sleeps: throttle 0.6 before each of the 9 provider
-        # calls + recovery backoffs 10, 30, in call order.
+        # Engine sleeps, in call order. The adaptive throttle (MED A3)
+        # doubles on every exhausted 429 (6 -> 12 -> 24 -> 30 cap);
+        # LOW A4 skips the throttle before the batch's first call and
+        # right after each recovery backoff (10, 30):
+        #   k0: (no sleep) 429 -> interval 12
+        #   k1: 12, 429 -> 24; k2: 24, 429 -> 30; recovery 10
+        #   k2 retry: (no sleep) 429; k3: 30, 429; k4: 30, 429
+        #   recovery 30; k4 retry: (no sleep) 429
+        #   k5: 30, 429; k6: 30, 429 -> provider dead.
         self.assertEqual(engine_sleeps,
-                         [0.6, 0.6, 0.6, 10.0,
-                          0.6, 0.6, 0.6, 30.0,
-                          0.6, 0.6, 0.6])
+                         [12.0, 24.0, 10.0,
+                          30.0, 30.0, 30.0, 30.0, 30.0])
         summary = results_summary(res)
         self.assertEqual(summary["failed"], 10)
         self.assertIn("429", summary["first_error"])
@@ -197,14 +205,19 @@ class TestRetryTerminatesEndToEnd(unittest.TestCase):
         try:
             os.environ["AGNES_API_KEY"] = "dummy-for-test"
             res = translate_strings(
-                {"k0": "Hello world"}, provider=AgnesProvider())
+                {"k0": "Hello world", "k1": "Good morning"},
+                provider=AgnesProvider())
         finally:
             urllib.request.urlopen = orig_urlopen
             engine_mod._sleep = orig_esleep
             providers_mod._sleep = orig_psleep
             os.environ.pop("AGNES_API_KEY", None)
-        self.assertEqual(res[0].status, "translated")
-        self.assertEqual(engine_sleeps, [0.6])
+        self.assertEqual([r.status for r in res],
+                         ["translated", "translated"])
+        # Two calls: the batch's first call is not slept (LOW A4 --
+        # no predecessor to pace against); the second sleeps the
+        # adaptive base interval (6.0s, clean success decays to base).
+        self.assertEqual(engine_sleeps, [6.0])
 
 
 class TestNoKeyLeakInErrors(unittest.TestCase):

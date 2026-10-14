@@ -18,7 +18,7 @@ class MockProvider(BaseProvider):
         self.fail_on = set(fail_on)
         self.calls = []
 
-    def translate(self, text, source_lang="en", target_lang="id"):
+    def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
         self.calls.append(text)
         # strip any glossary hint the engine appended
         core = text.split("\n[Keep these")[0]
@@ -30,7 +30,7 @@ class MockProvider(BaseProvider):
 class BadProvider(BaseProvider):
     name = "bad"
 
-    def translate(self, text, source_lang="en", target_lang="id"):
+    def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
         raise RuntimeError("boom")
 
 
@@ -38,7 +38,7 @@ class EmptyProvider(BaseProvider):
     """Returns an empty string -- must never ship as a translation."""
     name = "empty"
 
-    def translate(self, text, source_lang="en", target_lang="id"):
+    def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
         return ""
 
 
@@ -46,7 +46,7 @@ class NoneProvider(BaseProvider):
     """Returns None -- must not crash validation with TypeError."""
     name = "none"
 
-    def translate(self, text, source_lang="en", target_lang="id"):
+    def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
         return None
 
 
@@ -199,7 +199,7 @@ class TestEngine(unittest.TestCase):
         class DeadProvider:
             name = "agnes"
 
-            def translate(self, text, src, tgt):
+            def translate(self, text, src, tgt, extra_instruction=None):
                 raise RuntimeError("HTTP 401: invalid API key")
 
         res = translate_strings({"a": "Hello world", "b": "1080x1920"},
@@ -218,7 +218,7 @@ class TestEngine(unittest.TestCase):
         class FlakyProvider:
             name = "flaky"
 
-            def translate(self, text, src, tgt):
+            def translate(self, text, src, tgt, extra_instruction=None):
                 if "boom" in text:
                     raise RuntimeError("boom failed")
                 return "ID:" + text
@@ -583,14 +583,16 @@ class TestThrottleAndRecovery(unittest.TestCase):
             name = "throttled"
             throttle_seconds = 0.6
 
-            def translate(self, text, source_lang="en", target_lang="id"):
+            def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
                 return "ID:" + text
 
         res, sleeps = self._run_with_sleep(
             {"a": "Hello world", "b": "Good morning"}, ThrottledProvider())
         self.assertEqual([r.status for r in res],
                          ["translated", "translated"])
-        self.assertEqual(sleeps, [0.6, 0.6])
+        # LOW A4: the throttle spaces CONSECUTIVE calls -- the batch's
+        # very first call has no predecessor, so it is not slept.
+        self.assertEqual(sleeps, [0.6])
 
     def test_no_throttle_for_stub_provider(self):
         res, sleeps = self._run_with_sleep(
@@ -607,7 +609,7 @@ class TestThrottleAndRecovery(unittest.TestCase):
             def __init__(self):
                 self.calls = 0
 
-            def translate(self, text, source_lang="en", target_lang="id"):
+            def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
                 self.calls += 1
                 if self.calls <= 3:
                     raise TransientProviderError(
@@ -638,7 +640,7 @@ class TestThrottleAndRecovery(unittest.TestCase):
             def __init__(self):
                 self.calls = 0
 
-            def translate(self, text, source_lang="en", target_lang="id"):
+            def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
                 self.calls += 1
                 raise TransientProviderError(
                     "agnes provider request failed: 429")
@@ -661,7 +663,7 @@ class TestThrottleAndRecovery(unittest.TestCase):
             def __init__(self):
                 self.calls = 0
 
-            def translate(self, text, source_lang="en", target_lang="id"):
+            def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
                 self.calls += 1
                 raise RuntimeError("network down")
 
@@ -715,31 +717,36 @@ class TestRetryKeepsGlossaryHint(unittest.TestCase):
         # Round-2 (Agnes): the retry prompt used to drop the glossary
         # keep-verbatim hint, so a retried string could mistranslate a
         # brand term the first attempt had protected.
+        # MED #3 / MED #5: the hint now travels via extra_instruction
+        # (instruction block), never inside the translatable Text:
+        # field -- and the retry carries the SAME full instruction
+        # block as the first attempt, PLUS the stricter placeholder
+        # line.
         class RetryMock(BaseProvider):
             name = "retrymock"
 
             def __init__(self):
-                self.calls = []
+                self.calls = []  # (text, extra_instruction)
                 self.n = 0
 
-            def translate(self, text, source_lang="en", target_lang="id"):
-                self.calls.append(text)
-                core = text
-                prefix = ("Translate ONLY. Do not explain. Copy every "
-                          "placeholder character-for-character.\n")
-                if core.startswith(prefix):
-                    core = core[len(prefix):]
-                core = core.split("\n[Keep these")[0]
+            def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
+                self.calls.append((text, extra_instruction))
                 self.n += 1
                 if self.n == 1:
-                    return core.replace("%d", "")  # fail validation
-                return f"ID:{core}"
+                    return text.replace("%d", "")  # fail validation
+                return f"ID:{text}"
 
         p = RetryMock()
         res = translate_strings({"a": "Play KuroPatch %d"}, provider=p)
         self.assertEqual(len(p.calls), 2)
-        self.assertIn("Keep these terms", p.calls[1])
-        self.assertIn("KuroPatch", p.calls[1])
+        # First attempt: raw text, terms in the instruction channel.
+        self.assertEqual(p.calls[0][0], "Play KuroPatch %d")
+        self.assertIn("KuroPatch", p.calls[0][1])
+        # Retry: raw text STILL without the note, instruction channel
+        # with the strict line + the terms.
+        self.assertEqual(p.calls[1][0], "Play KuroPatch %d")
+        self.assertIn("Translate ONLY", p.calls[1][1])
+        self.assertIn("KuroPatch", p.calls[1][1])
         self.assertEqual(res[0].translation, "ID:Play KuroPatch %d")
 
 
@@ -1001,7 +1008,7 @@ class TestCacheSharedAcrossBatches(unittest.TestCase):
             class MustNotBeCalled(BaseProvider):
                 name = "mock"
 
-                def translate(self, text, source_lang="en", target_lang="id"):
+                def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
                     raise AssertionError("provider must not be called")
 
             r2 = translate_strings(
@@ -1019,7 +1026,7 @@ class TestCacheSharedAcrossBatches(unittest.TestCase):
             def __init__(self):
                 self.calls = 0
 
-            def translate(self, text, source_lang="en", target_lang="id"):
+            def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
                 self.calls += 1
                 raise RuntimeError("network down")
 
@@ -1048,7 +1055,7 @@ class TestCacheSharedAcrossBatches(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            def translate(self, text, source_lang="en", target_lang="id"):
+            def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
                 self.calls.append(text)
                 return re.sub(r"%[a-zA-Z%]", "", text)
 
@@ -1072,7 +1079,7 @@ class TestCacheSharedAcrossBatches(unittest.TestCase):
             def __init__(self):
                 self.calls = 0
 
-            def translate(self, text, source_lang="en", target_lang="id"):
+            def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
                 self.calls += 1
                 raise RuntimeError("network down")
 

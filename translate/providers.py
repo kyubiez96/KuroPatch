@@ -81,8 +81,15 @@ class BaseProvider:
 
     name = "base"
 
-    def translate(self, text, source_lang="en", target_lang="id"):
-        """Translate a single string. Returns translated string."""
+    def translate(self, text, source_lang="en", target_lang="id",
+                  extra_instruction=None):
+        """Translate a single string. Returns translated string.
+
+        ``extra_instruction`` (optional) is prompt text the engine wants
+        in the INSTRUCTION block (e.g. keep-verbatim terms, the stricter
+        retry line) -- never inside the translatable ``Text:`` field.
+        Providers that ignore it must still accept the argument.
+        """
         raise NotImplementedError
 
     def translate_batch(self, texts, source_lang="en", target_lang="id"):
@@ -98,7 +105,8 @@ class PassthroughProvider(BaseProvider):
 
     name = "passthrough"
 
-    def translate(self, text, source_lang="en", target_lang="id"):
+    def translate(self, text, source_lang="en", target_lang="id",
+                  extra_instruction=None):
         return text
 
 
@@ -114,16 +122,41 @@ class AgnesProvider(BaseProvider):
     name = "agnes"
     endpoint = "https://apihub.agnes-ai.com/v1/chat/completions"
     model = "agnes-3.0-flash"
-    # Seconds to wait before EVERY provider call. The free tier
-    # rate-limits rapid-fire bursts: a 400-string .loc batch with no
-    # pacing trips 429s, 3 consecutive 429s trip the engine's batch
-    # abort, and the remaining ~300 strings mass-fail (v2.0.11
-    # Castlevania: 327 failed). The engine reads this attribute
-    # (providers without it -- stubs, passthrough -- get no delay).
-    throttle_seconds = 0.6
+    # ADAPTIVE throttle (audit MED A3, supersedes the old fixed 0.6s).
+    # The free tier rate-limits rapid-fire bursts: a 400-string .loc
+    # batch with no pacing trips 429s, 3 consecutive 429s trip the
+    # engine's batch abort, and the remaining ~300 strings mass-fail
+    # (v2.0.11 Castlevania: 327 failed). The old fixed 0.6s (100/min
+    # theoretical) was still too fast -- the natural ~46/min rate
+    # already tripped 429s on-device.
+    #
+    # No authoritative vendor limit was found (researched 2026-10-14:
+    # secondary sources disagree -- 8 RPM, 10 effective / 30 published
+    # RPM, 20 RPM), so the base sits at the strictest end and
+    # adaptation does the rest: DOUBLE the interval on any 429/5xx
+    # signal (cap 30s), DECAY back toward base on clean success
+    # (floor = base, never below -- no oscillation back into 429s).
+    # At base 6.0s + ~1.3s latency the steady rate is ~8/min, under
+    # every claimed limit. The engine paces calls with the CURRENT
+    # value via throttle_seconds (providers without it -- stubs,
+    # passthrough -- get no delay).
+    _THROTTLE_BASE = 6.0
+    _THROTTLE_CAP = 30.0
+    _THROTTLE_DECAY = 0.9
 
     def __init__(self, timeout=30):
         self.timeout = timeout
+        self.throttle_seconds = self._THROTTLE_BASE
+
+    def _on_rate_limited(self):
+        """A 429/5xx was seen: back off (double, capped)."""
+        self.throttle_seconds = min(
+            self._THROTTLE_CAP, self.throttle_seconds * 2)
+
+    def _on_success(self):
+        """A clean call: decay back toward base (floored at base)."""
+        self.throttle_seconds = max(
+            self._THROTTLE_BASE, self.throttle_seconds * self._THROTTLE_DECAY)
 
     def _api_key(self):
         # Explicit override (Android app via set_api_key) wins: on-device
@@ -137,7 +170,8 @@ class AgnesProvider(BaseProvider):
             )
         return key
 
-    def _build_prompt(self, text, source_lang, target_lang):
+    def _build_prompt(self, text, source_lang, target_lang,
+                      extra_instruction=None):
         prompt = (
             f"Translate the following text from {source_lang} to {target_lang}.\n"
             "Return ONLY the translation, no explanations, no quotes.\n"
@@ -174,6 +208,11 @@ class AgnesProvider(BaseProvider):
                 "Use ASCII-only output: no curly quotes, no en/em dashes, "
                 "no ellipsis character.\n"
             )
+        if extra_instruction:
+            # Engine-supplied instructions (keep-verbatim terms, the
+            # stricter retry line) -- in the INSTRUCTION block, never
+            # inside the translatable Text: field (MED #3, MED #5).
+            prompt += extra_instruction.strip() + "\n"
         prompt += f"Text: {text}"
         return prompt
 
@@ -188,11 +227,23 @@ class AgnesProvider(BaseProvider):
         key is just slow failure, and a dead network must not hang
         (the engine's batch abort handles it).
         """
+        saw_retryable = False
         for attempt in range(_MAX_PROVIDER_RETRIES + 1):
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
+                    data = json.loads(resp.read().decode("utf-8"))
+                # Adaptation (MED A3): a 429/5xx seen during this call
+                # is rate-limit pressure even if a retry then
+                # succeeded -- double once per call. A fully clean
+                # call decays back toward base.
+                if saw_retryable:
+                    self._on_rate_limited()
+                else:
+                    self._on_success()
+                return data
             except urllib.error.HTTPError as exc:
+                if exc.code in _RETRYABLE_STATUS:
+                    saw_retryable = True
                 if (exc.code not in _RETRYABLE_STATUS
                         or attempt >= _MAX_PROVIDER_RETRIES):
                     # Retryable status that survived all provider-level
@@ -201,23 +252,41 @@ class AgnesProvider(BaseProvider):
                     # permanent (bad key, bad request) -- fail fast.
                     if (exc.code in _RETRYABLE_STATUS
                             and attempt >= _MAX_PROVIDER_RETRIES):
+                        self._on_rate_limited()
                         raise TransientProviderError(
                             f"agnes provider request failed: {exc}") from exc
                     raise RuntimeError(
                         f"agnes provider request failed: {exc}") from exc
                 _sleep(_retry_delay(attempt, exc.headers))
+            except ValueError as exc:
+                # LOW #12: a malformed 200 body (bad JSON, non-UTF-8
+                # decode error) is connection flakiness, not a
+                # permanent failure -- it used to bypass the
+                # transient-recovery path as a plain RuntimeError.
+                # Retry INSIDE the loop like a retryable HTTP error
+                # (Argon review: raising immediately gave the string
+                # 1 attempt instead of 4, and _on_rate_limited() here
+                # wrongly penalized the throttle for a non-rate-limit
+                # error). On exhaustion, Transient WITHOUT throttle
+                # penalty -- a decode error is not rate-limit signal.
+                if attempt >= _MAX_PROVIDER_RETRIES:
+                    raise TransientProviderError(
+                        f"agnes provider request failed: {exc}") from exc
+                _sleep(_retry_delay(attempt, None))
             except Exception as exc:
                 raise RuntimeError(
                     f"agnes provider request failed: {exc}") from exc
         # Unreachable: the loop always returns or raises.
         raise RuntimeError("agnes provider request failed: no response")
 
-    def translate(self, text, source_lang="en", target_lang="id"):
+    def translate(self, text, source_lang="en", target_lang="id",
+                  extra_instruction=None):
         if not text.strip():
             return text
         body = json.dumps({
             "model": self.model,
-            "messages": [{"role": "user", "content": self._build_prompt(text, source_lang, target_lang)}],
+            "messages": [{"role": "user", "content": self._build_prompt(
+                text, source_lang, target_lang, extra_instruction)}],
             "temperature": 0.1,
             "max_tokens": 2000,
         }).encode("utf-8")
@@ -243,7 +312,13 @@ class AgnesProvider(BaseProvider):
         # message instead (round-1 final audit).
         if not isinstance(content, str):
             raise RuntimeError("agnes provider returned no content")
-        content = content.strip()
+        # HIGH #1: do NOT strip here. The provider used to strip the
+        # model's reply, destroying load-bearing leading/trailing
+        # whitespace (fragments completed at runtime: "5" + " detik
+        # tersisa" rendered as "5detik tersisa"), and no layer caught
+        # it. The engine re-applies the source's exact edge whitespace
+        # to the returned translation, and the validator now checks
+        # edge whitespace -- the provider must not destroy information.
         # A truncated response (max_tokens hit) is NOT a translation:
         # the text is cut mid-sentence and the validator cannot detect
         # that (placeholders may survive by luck). Fail instead of

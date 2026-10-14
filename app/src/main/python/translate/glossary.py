@@ -272,10 +272,27 @@ class Glossary:
                     return f"{hit} ({suffix})"
         return None
 
+    def terms_in(self, text):
+        """Return the sorted glossary terms found in ``text``.
+
+        Used by the engine to build the keep-verbatim instruction line
+        (MED #5): the terms go into the prompt's INSTRUCTION block,
+        never inside the translatable ``Text:`` field.
+        """
+        if not self._word_re:
+            return []
+        return sorted({m.group(0) for m in self._word_re.finditer(text)})
+
     def protect_hint(self, text):
-        """Return text with a keep-verbatim note for the provider prompt."""
-        found = sorted({m.group(0) for m in self._word_re.finditer(text)}) \
-            if self._word_re else []
+        """Return text with a keep-verbatim note for the provider prompt.
+
+        LEGACY: kept for backward compatibility (tests + old callers).
+        The engine no longer uses this -- it passes the raw text plus
+        :meth:`terms_in` via the provider's ``extra_instruction``
+        channel, so the note never lands inside the translatable
+        ``Text:`` field (MED #5).
+        """
+        found = self.terms_in(text)
         if not found:
             return text
         keep = ", ".join(f'"{t}"' for t in found)
