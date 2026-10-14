@@ -31,6 +31,8 @@ jobs:
       - name: Verify on-device mirrors match root sources
         run: |
           diff -r --exclude=__pycache__ translate app/src/main/python/translate
-          diff -r --exclude=__pycache__ --exclude=test_jar.py --exclude=test_loc.py core app/src/main/python/core
+          diff -r --exclude=__pycache__ --exclude=test_jar.py --exclude=test_loc.py --exclude=test_loc_attack.py --exclude=test_loc_integration.py core app/src/main/python/core
           diff tests/test_jar.py app/src/main/python/core/test_jar.py
           diff tests/test_loc.py app/src/main/python/core/test_loc.py
+          diff tests/test_loc_attack.py app/src/main/python/core/test_loc_attack.py
+          diff tests/test_loc_integration.py app/src/main/python/core/test_loc_integration.py
