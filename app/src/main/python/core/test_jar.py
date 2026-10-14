@@ -610,6 +610,82 @@ class TestLanguageNameKeysNotTranslated(unittest.TestCase):
                 self.assertNotIn(b"Inggris", z.read("Game.class"))
                 self.assertIn(b"Halo Pemain", z.read("a.properties"))
 
+    def test_non_class_language_names_not_collected(self):
+        # Final audit: the .class-only guard missed .properties and
+        # smali. A game matching `language.name=English` from a
+        # .properties file (or a smali const-string "Deutsch") via
+        # equals() bricks exactly like Castlevania's .class case.
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "game.jar")
+            smali = (
+                ".class public LGame;\n"
+                ".method public start()V\n"
+                '    const-string v0, "Deutsch"\n'
+                '    const-string v1, "Start Game"\n'
+                ".end method\n"
+            )
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("game.properties",
+                           "language.name=English\nwelcome=Welcome\n")
+                z.writestr("Game.smali", smali)
+            got = jar_mod.collect_strings(src)
+            self.assertNotIn("English", got["strings"])
+            self.assertNotIn("Deutsch", got["strings"])
+            self.assertIn("Welcome", got["strings"])
+            self.assertIn("Start Game", got["strings"])
+
+    def test_non_class_language_names_not_patched(self):
+        # Defense in depth: a hand-made map with language names must
+        # not rewrite them in .properties or smali either, while real
+        # translations still land.
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "game.jar")
+            out = os.path.join(td, "out.jar")
+            smali = (
+                ".class public LGame;\n"
+                ".method public start()V\n"
+                '    const-string v0, "Deutsch"\n'
+                '    const-string v1, "Start Game"\n'
+                ".end method\n"
+            )
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("game.properties",
+                           "language.name=English\nwelcome=Welcome\n")
+                z.writestr("Game.smali", smali)
+            jar_mod.patch_jar(src, {"English": "Inggris",
+                                    "Deutsch": "Jerman",
+                                    "Welcome": "Selamat datang",
+                                    "Start Game": "Mulai Game"}, out)
+            with zipfile.ZipFile(out) as z:
+                props = z.read("game.properties").decode()
+                self.assertIn("language.name=English", props)
+                self.assertNotIn("Inggris", props)
+                self.assertIn("Selamat datang", props)
+                smali_out = z.read("Game.smali").decode()
+                self.assertIn('"Deutsch"', smali_out)
+                self.assertNotIn("Jerman", smali_out)
+                self.assertIn("Mulai Game", smali_out)
+
+    def test_data_key_prose_embedded_candidate_not_dropped(self):
+        # _data_key_strings must only flag a candidate stored as its
+        # OWN entry in a data file. A candidate embedded in a longer
+        # prose run ("Help: Press SELECT LANGUAGE to continue now!")
+        # is display text, not a key -- it must still be collected.
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "game.jar")
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("game.properties",
+                           "sel=SELECT LANGUAGE\n")
+                z.writestr(
+                    "data.dat",
+                    b"Help: Press SELECT LANGUAGE to continue now!\x00")
+            got = jar_mod.collect_strings(src)
+            self.assertIn("SELECT LANGUAGE", got["strings"])
+            self.assertEqual(got["data_keys_dropped"], 0)
+
     def test_real_castlevania_language_keys_survive(self):
         # The exact broken jar: the 12 language-name strings must not
         # be collected, and a patch map containing them must leave the
@@ -647,6 +723,94 @@ class TestLanguageNameKeysNotTranslated(unittest.TestCase):
                         if name.encode("utf-8") in orig:
                             self.assertIn(name.encode("utf-8"), new,
                                           f"{entry} lost language key {name!r}")
+
+
+class TestDataKeyDelimiters(unittest.TestCase):
+    """Final audit round 1: _data_key_strings exact-run matching missed
+    keys stored as key=value, a;b;c and "quoted" entries -- only bare
+    runs were caught. Runs are now also split on structural
+    delimiters (= ; : , | " ' ...). Spaces stay non-delimiters so
+    prose words are never flagged (see sibling's prose test)."""
+
+    def _jar(self, td, data_content, candidate):
+        src = os.path.join(td, "game.jar")
+        with zipfile.ZipFile(src, "w") as z:
+            z.writestr("data.txt", data_content)
+            z.writestr("Game.class", _make_class_with_string(candidate))
+        return src
+
+    def test_key_value_style_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "item=SwordOfFire\nlevel=3\n", "SwordOfFire")
+            got = jar_mod.collect_strings(src)
+            self.assertNotIn("SwordOfFire", got["strings"])
+
+    def test_semicolon_list_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "SwordOfFire;IceShield;FireBow",
+                             "SwordOfFire")
+            got = jar_mod.collect_strings(src)
+            self.assertNotIn("SwordOfFire", got["strings"])
+
+    def test_quoted_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, 'selected="SwordOfFire"\n', "SwordOfFire")
+            got = jar_mod.collect_strings(src)
+            self.assertNotIn("SwordOfFire", got["strings"])
+
+    def test_colon_style_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "item: SwordOfFire\n", "SwordOfFire")
+            got = jar_mod.collect_strings(src)
+            self.assertNotIn("SwordOfFire", got["strings"])
+
+
+class TestReverseLanguageNames(unittest.TestCase):
+    """Final audit round 1: _is_language_name only recognised the
+    English/autonym form ('English'). A double-patch (patching an
+    already-patched jar) or a game shipping Indonesian labels
+    ('Inggris' in .class) would have its language names
+    re-translated. Indonesian language names are language names too."""
+
+    def test_indonesian_names_not_collected(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "game.jar")
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("Game.class", _make_class_with_string("Inggris"))
+                z.writestr("Other.class", _make_class_with_string("Jerman"))
+                z.writestr("Third.class",
+                           _make_class_with_string("Hello Player"))
+            got = jar_mod.collect_strings(src)
+            self.assertNotIn("Inggris", got["strings"])
+            self.assertNotIn("Jerman", got["strings"])
+            self.assertIn("Hello Player", got["strings"])
+
+    def test_indonesian_names_not_patched(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "game.jar")
+            out = os.path.join(td, "out.jar")
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("Game.class", _make_class_with_string("Inggris"))
+                z.writestr("a.properties", "greet=Hello Player\n")
+            jar_mod.patch_jar(src, {"Inggris": "English",
+                                    "Hello Player": "Halo Pemain"}, out)
+            with zipfile.ZipFile(out) as z:
+                self.assertIn(b"Inggris", z.read("Game.class"))
+                self.assertNotIn(b"English", z.read("Game.class"))
+                self.assertIn(b"Halo Pemain", z.read("a.properties"))
+
+    def test_region_qualified_indonesian_name(self):
+        import core.jar as jar_mod
+        self.assertTrue(jar_mod._is_language_name("Inggris (US)"))
+        self.assertTrue(jar_mod._is_language_name("English (US)"))
+        self.assertFalse(jar_mod._is_language_name("English version"))
+
 
 
 if __name__ == "__main__":

@@ -319,10 +319,21 @@ class MainActivity : AppCompatActivity() {
                     binding.tvStatus.text =
                         "$changed strings translated, ${n - changed - failed} unchanged" +
                         if (failed > 0) ", $failed failed" else ""
-                    binding.btnPatch.isEnabled = true
-                    // stash for patch step
-                    translatedStrings = translated
-                    translatedLangCode = langCode()
+                    // Total provider failure: do NOT stash the
+                    // all-source map or enable Patch. The map holds
+                    // zero translations -- patching with it would
+                    // produce an untranslated jar labelled _id, and
+                    // it would also DESTROY a previous good
+                    // translation (e.g. a failed re-translate after
+                    // switching language). Keep the previous
+                    // translations (if any) and leave Patch in its
+                    // setBusy-computed state.
+                    if (!(failed > 0 && changed == 0)) {
+                        binding.btnPatch.isEnabled = true
+                        // stash for patch step
+                        translatedStrings = translated
+                        translatedLangCode = langCode()
+                    }
                     // Total provider failure (nothing translated because
                     // the provider is dead) must be LOUD, not a quiet
                     // "unchanged" status: the user needs to know to

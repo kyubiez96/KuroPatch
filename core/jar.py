@@ -54,6 +54,17 @@ def _is_language_name(value):
     The trade-off is deliberate: a skipped language name costs one
     untranslated word; a translated one costs a bricked game.
 
+    The guard is TARGET-INDEPENDENT by design: the game's internal
+    lookup uses the ORIGINAL names whatever the target language, so
+    translating them breaks the lookup for every target. The only
+    cost is cosmetic -- a language menu may show 'Deutsch' instead
+    of 'German' in a non-Indonesian build -- and the game still works.
+
+    Also matches the Indonesian names themselves ('Inggris', 'Jerman',
+    ...): a double-patch (patching an already-patched jar) or a game
+    that ships with Indonesian labels must not have its language
+    names re-translated either.
+
     Lazy import: core must not depend on translate at module load
     time (translate/ never imports core/, so no cycle, but keep the
     boundary explicit). Cached after the first call.
@@ -61,15 +72,23 @@ def _is_language_name(value):
     cached = getattr(_is_language_name, "_glossary", None)
     if cached is None:
         try:
-            from translate.glossary import Glossary
+            from translate.glossary import Glossary, LANGUAGE_NAMES_ID
         except ImportError:
             try:
-                from ..translate.glossary import Glossary
+                from ..translate.glossary import Glossary, LANGUAGE_NAMES_ID
             except ImportError:
                 return False
         cached = Glossary()
         _is_language_name._glossary = cached
-    return cached.lookup_language(value) is not None
+        # Reverse set: Indonesian names of languages. A value that IS
+        # an Indonesian language name is still a language name (a
+        # key), not text to translate.
+        _is_language_name._id_names = frozenset(
+            v.strip().lower() for v in LANGUAGE_NAMES_ID.values())
+    if cached.lookup_language(value) is not None:
+        return True
+    base = _TRAILING_PAREN_RE.sub("", value.strip()).strip().lower()
+    return base in _is_language_name._id_names
 
 # Values that are never UI text in any language.
 _TECHNICAL_TOKENS = frozenset({
@@ -81,8 +100,16 @@ _CJK_RE = re.compile(r"[\u2e80-\u9fff]", re.UNICODE)
 # Maximal printable runs (UTF-8 text incl. high bytes) for data-key
 # extraction. Runs shorter than 3 bytes are noise.
 _DATA_RUN_RE = re.compile(rb"[\x20-\x7e\x80-\xff]{3,}")
+# Structural delimiters inside a data run: keys are stored as
+# key=value, a;b;c, "quoted", key: value, ... Splitting runs on
+# these finds keys that exact-run matching misses. Deliberately
+# NOT space / '/' / '-' / '.' -- those appear inside prose and
+# paths, and splitting on them would flag ordinary words as keys.
+_DATA_DELIM_RE = re.compile(rb"[=;:,|\"'\t<>{}()\[\]&!]+")
 # Keys are short identifiers; truncate over-long runs before matching.
 _MAX_KEY_LEN = 200
+# One trailing "(...)" suffix (region qualifier: "Inggris (US)").
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^()]*\)\s*$")
 
 
 def should_collect(text, minimum=3, translate_all=False):
@@ -121,7 +148,12 @@ def _data_key_strings(workspace, candidates):
 
     Only maximal printable runs are matched, so a candidate embedded
     in prose (a help text inside a .dat) is NOT flagged -- keys are
-    stored as separate entries, prose is not. .class/.properties/smali
+    stored as separate entries, prose is not. Runs are ALSO split on
+    structural delimiters (``= ; : , | " '`` ...) so ``key=value``,
+    ``a;b;c`` and ``"quoted"`` entries are caught -- exact-run
+    matching alone missed all three (proven by adversarial probe).
+    Spaces are deliberately NOT delimiters: splitting on them would
+    flag ordinary prose words as keys. .class/.properties/smali
     (translation sources), string packs (translation targets) and
     META-INF metadata are excluded from the data blob. False positives
     fail SAFE: an over-skipped string just stays untranslated, the
@@ -159,6 +191,19 @@ def _data_key_strings(workspace, candidates):
                 hit = cand_bytes.get(run)
                 if hit is not None:
                     keys.add(hit)
+                    continue
+                # Token-split: a key stored as key=value, a;b;c or
+                # "quoted" is inside a longer run, not equal to it.
+                # Tokens are stripped: "item: SwordOfFire" splits to
+                # " SwordOfFire" (leading space after the colon) and
+                # must still match the stripped candidate.
+                for tok in _DATA_DELIM_RE.split(run):
+                    tok = tok.strip()
+                    if not tok:
+                        continue
+                    hit = cand_bytes.get(tok)
+                    if hit is not None:
+                        keys.add(hit)
     return keys
 
 
@@ -180,6 +225,13 @@ def collect_strings(jar_path, minimum=3, translate_all=False, workspace=None):
         if not value:
             return
         total_seen += 1
+        # Language names are logic keys, never display text (see
+        # _is_language_name) -- enforced HERE, once, for every
+        # source (.properties / smali / .class / packs). The 4fb0954
+        # fix only guarded .class pools; a game storing its language
+        # names in .properties or smali would brick the same way.
+        if _is_language_name(value):
+            return
         ok, _reason = should_collect(value, minimum, translate_all)
         if not ok:
             return
@@ -214,12 +266,6 @@ def collect_strings(jar_path, minimum=3, translate_all=False, workspace=None):
                 continue
             rel = os.path.relpath(path, patcher.workspace)
             for index, decoded in iter_class_strings(data):
-                # Language names in .class pools are logic keys
-                # (matched via equals() against TRAD.lang) -- never
-                # collect them, or the game breaks (see
-                # _is_language_name).
-                if _is_language_name(decoded):
-                    continue
                 _add(decoded, f"{rel}::ldc#{index}")
         for root, _dirs, files in os.walk(patcher.workspace):
             for filename in files:
@@ -303,6 +349,14 @@ def _match_translation(raw, translations):
     stripped = raw.strip()
     if not stripped:
         return None
+    # Language names are lookup keys, never display text (see
+    # _is_language_name) -- enforced HERE, once, for every source
+    # (.properties / smali / .class / packs). A hand-made / stale
+    # translation map containing language names must not reach ANY
+    # of them: collect already skips them, but patch must be safe on
+    # its own. The 4fb0954 fix only guarded .class pools.
+    if _is_language_name(stripped):
+        return None
     t = translations.get(stripped)
     if not t or t == stripped:
         return None
@@ -333,6 +387,13 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
                 "not a string -- did you pass a `collect --out` file? "
                 "That file maps values to origin lists, not translations."
             )
+    # Language names are logic keys in EVERY source, not just .class
+    # pools: a hand-made / stale map containing them must not rewrite
+    # a .properties `language.name=English` or a smali const-string
+    # "Deutsch" either. Drop them from the map up front so all four
+    # patch loops are covered at once.
+    translations = {k: v for k, v in translations.items()
+                    if not _is_language_name(k)}
     tmp = workspace or tempfile.mkdtemp(prefix="kpatch-patch-")
     patcher = JarPatcher(jar_path, workspace=tmp)
     stats = {"properties": 0, "smali": 0, "classes": 0, "packs": 0}
@@ -370,12 +431,6 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
             # raw-keyed map: pool strings may carry surrounding whitespace
             class_map = {}
             for _idx, decoded in iter_class_strings(data):
-                # Defense in depth: a hand-made / stale translation map
-                # containing language names must not reach .class pools
-                # either -- collect already skips them, but patch must
-                # be safe on its own (see _is_language_name).
-                if _is_language_name(decoded):
-                    continue
                 new = _match_translation(decoded, translations)
                 if new is not None:
                     class_map[decoded] = new
