@@ -41,7 +41,11 @@ class TranslationCache:
                 # crash TranslationCache.__init__ with a raw
                 # UnicodeDecodeError -- round-1 final audit).
                 self._data = data if isinstance(data, dict) else {}
-            except (ValueError, OSError):
+            except (ValueError, OSError, RecursionError):
+                # RecursionError: a hand-edited cache file with
+                # absurd nesting (1500+ levels) parses but would
+                # crash the later save() in json.dump. Treat like
+                # any other corrupt cache -- start empty.
                 self._data = {}
 
     def get(self, text, source_lang, target_lang, provider_name):
@@ -67,7 +71,11 @@ class TranslationCache:
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(self._data, fh, ensure_ascii=False, indent=1)
             os.replace(tmp, self.path)
-        except (OSError, TypeError, ValueError):
+        except (OSError, TypeError, ValueError, RecursionError):
+            # RecursionError: json.dump on a deeply nested _data
+            # (loaded from a hand-edited cache file) recurses past
+            # the interpreter limit. Same best-effort rule: drop
+            # the write, keep the old file, never crash the batch.
             # Cache is best-effort: a directory sitting at the cache
             # path (or a read-only location) must never crash
             # translation -- os.replace(file, dir) raises

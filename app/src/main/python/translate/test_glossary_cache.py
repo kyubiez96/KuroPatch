@@ -210,6 +210,28 @@ class TestCache(unittest.TestCase):
             c3 = TranslationCache(p)
             self.assertEqual(c3.get("good", "en", "id", "agnes"), "bagus")
 
+    def test_save_with_deeply_nested_value_does_not_crash(self):
+        # Final audit round 3: save() caught (OSError, TypeError,
+        # ValueError) but json.dump on a deeply nested _data (loaded
+        # from a hand-edited cache file with 1500+ nesting levels)
+        # raises RecursionError -- uncaught, crashed the batch AFTER
+        # all translations were done. Cache is best-effort: drop the
+        # write, keep the old file, never crash.
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.json")
+            inner = '{"a": 1}'
+            for _ in range(1500):
+                inner = '{"a": ' + inner + '}'
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(inner)
+            c = TranslationCache(p)  # must not raise on load
+            c.put("good", "en", "id", "agnes", "bagus")
+            c.save()  # must not raise (RecursionError)
+            # The poisoned file is still on disk (write dropped);
+            # a fresh cache sees the same corrupt content, not a crash.
+            c2 = TranslationCache(p)
+            self.assertIsNone(c2.get("good", "en", "id", "agnes"))
+
 
 class TestFixedTranslations(unittest.TestCase):
     def test_day_month_ui_terms(self):
