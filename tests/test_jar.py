@@ -119,7 +119,41 @@ class TestJarPipeline(unittest.TestCase):
             self.assertEqual(stats["smali"], 0)
             self.assertEqual(stats["classes"], 0)
 
-    def test_should_collect_filters(self):
+    def test_whitespace_fragment_patched_and_preserved(self):
+        # .class pool strings may carry meaningful surrounding whitespace
+        # (format fragments like ", num samples: "). Collection strips
+        # keys, so patch must match on the stripped key AND re-apply the
+        # original whitespace -- otherwise the translation never lands.
+        with tempfile.TemporaryDirectory() as tmp:
+            jar = os.path.join(tmp, "ws.jar")
+            smali = (
+                ".class public LGame;\n"
+                ".method public start()V\n"
+                '    const-string v0, "Score: "\n'
+                ".end method\n"
+            )
+            with zipfile.ZipFile(jar, "w") as zf:
+                zf.writestr("Game.class",
+                            _make_class_with_string(", num samples: "))
+                zf.writestr("Game.smali", smali)
+            out = os.path.join(tmp, "ws_id.jar")
+            stats = jar_mod.patch_jar(jar, {
+                ", num samples:": "[ID] , num samples:",
+                "Score:": "[ID] Score:",
+            }, out)
+            self.assertGreaterEqual(stats["classes"], 1)
+            self.assertGreaterEqual(stats["smali"], 1)
+            # verify the RAW pool/literal values (collect strips keys, so
+            # read the raw entries to confirm whitespace was preserved)
+            from core.patcher import iter_class_strings, iter_smali_literals
+            with zipfile.ZipFile(out) as zf:
+                class_vals = [v for _i, v in
+                              iter_class_strings(zf.read("Game.class"))]
+                smali_vals = [v for _s, _e, v in
+                              iter_smali_literals(
+                                  zf.read("Game.smali").decode())]
+            self.assertIn("[ID] , num samples: ", class_vals)
+            self.assertIn("[ID] Score: ", smali_vals)
         ok, _ = jar_mod.should_collect("Start Game")
         self.assertTrue(ok)
         ok, reason = jar_mod.should_collect("")

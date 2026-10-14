@@ -138,6 +138,29 @@ def collect_strings(jar_path, minimum=3, translate_all=False, workspace=None):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _match_translation(raw, translations):
+    """Match a raw string value against the (stripped-keyed) translations.
+
+    Collection strips values, so the translation map is keyed by the
+    stripped form -- but the raw value may carry surrounding whitespace
+    that is semantically meaningful (e.g. the format fragment
+    ``", num samples: "`` in a .class pool, where the trailing space
+    separates it from the number concatenated at runtime). Match on the
+    stripped key and re-apply the original surrounding whitespace to
+    the translation. Returns None when there is no translation or the
+    translation equals the source (no change needed).
+    """
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    t = translations.get(stripped)
+    if not t or t == stripped:
+        return None
+    leading = raw[:len(raw) - len(raw.lstrip())]
+    trailing = raw[len(raw.rstrip()):]
+    return leading + t + trailing
+
+
 def patch_jar(jar_path, translations, out_path, workspace=None):
     """Apply {source_value: translation} to a .jar and repack.
 
@@ -157,8 +180,8 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
             props = patcher.load_properties(path)
             changed = False
             for entry in props.entries:
-                new = translations.get(entry.value)
-                if new is not None and new != entry.value:
+                new = _match_translation(entry.value, translations)
+                if new is not None:
                     entry.value = new
                     changed = True
                     stats["properties"] += 1
@@ -168,13 +191,29 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
             with open(path, "r", encoding="utf-8",
                       errors="surrogateescape") as fh:
                 content = fh.read()
-            new_content, replaced, _unmatched = patch_smali_literals(content, translations)
+            # raw-keyed map: literals may carry surrounding whitespace
+            smali_map = {}
+            for _s, _e, decoded in iter_smali_literals(content):
+                new = _match_translation(decoded, translations)
+                if new is not None:
+                    smali_map[decoded] = new
+            if not smali_map:
+                continue
+            new_content, replaced, _unmatched = patch_smali_literals(content, smali_map)
             if replaced:
                 patcher.write_file(path, [new_content])
                 stats["smali"] += replaced
         for path in patcher.get_class_files():
             data = patcher.read_bytes(path)
-            new_data, replaced = patch_class_strings(data, translations)
+            # raw-keyed map: pool strings may carry surrounding whitespace
+            class_map = {}
+            for _idx, decoded in iter_class_strings(data):
+                new = _match_translation(decoded, translations)
+                if new is not None:
+                    class_map[decoded] = new
+            if not class_map:
+                continue
+            new_data, replaced = patch_class_strings(data, class_map)
             if replaced:
                 patcher.write_bytes(path, new_data)
                 stats["classes"] += replaced
@@ -192,8 +231,8 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
                 dirty = False
                 for pack in packs:
                     for i, value in enumerate(pack.strings):
-                        new = translations.get(value)
-                        if new is not None and new != value:
+                        new = _match_translation(value, translations)
+                        if new is not None:
                             pack.strings[i] = new
                             stats["packs"] += 1
                             dirty = True
