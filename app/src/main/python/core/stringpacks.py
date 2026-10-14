@@ -30,6 +30,10 @@ from typing import List
 
 _PACK_NAME_RE = re.compile(r"^RES_STRINGS\d*$")
 
+# Upper bound for LZMA-decompressed pack resources (defense against
+# decompression bombs from a crafted jar).
+_MAX_DECOMPRESSED = 64 * 1024 * 1024
+
 
 def is_string_pack_entry(name: str) -> bool:
     """True for Gameloft ``RES_STRINGS*`` resource entries (any directory)."""
@@ -49,9 +53,14 @@ def parse_resource(raw: bytes) -> List[StringPack]:
     """LZMA-decompress ``raw`` and parse every pack it contains.
 
     Raises :class:`ValueError` when the data is not a string-pack resource.
+    Decompression is capped (64 MB): a crafted resource must not be
+    able to OOM the process via a decompression bomb.
     """
     try:
-        data = lzma.decompress(raw, format=lzma.FORMAT_ALONE)
+        decompressor = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
+        data = decompressor.decompress(raw, max_length=_MAX_DECOMPRESSED)
+        if not decompressor.eof:
+            raise ValueError("decompressed data exceeds 64 MB cap")
     except (lzma.LZMAError, EOFError) as exc:
         raise ValueError(f"not LZMA-compressed: {exc}") from exc
 

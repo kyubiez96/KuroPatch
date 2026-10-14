@@ -190,6 +190,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun extractStrings() {
         val uri = jarUri ?: return
+        // A fresh extraction invalidates translations from any
+        // previous jar -- they must not survive to the patch step.
+        translatedStrings = emptyMap()
+        binding.btnPatch.isEnabled = false
         setBusy(true, "Extracting strings…")
         thread {
             try {

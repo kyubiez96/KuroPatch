@@ -239,6 +239,39 @@ class TestJarPipeline(unittest.TestCase):
         ok, _ = jar_mod.should_collect("12345")
         self.assertFalse(ok)
 
+    def test_rebuild_refuses_same_file(self):
+        # Rebuilding onto the input path truncates the source while the
+        # source ZipFile still needs it (directory entries) -- the
+        # input would be left as a 22-byte empty zip. Refuse loudly.
+        with tempfile.TemporaryDirectory() as tmp:
+            jar = _make_fixture(tmp)
+            with open(jar, "rb") as fh:
+                before = fh.read()
+            with self.assertRaises(ValueError):
+                jar_mod.patch_jar(jar, {"Quit": "Keluar"}, jar)
+            with open(jar, "rb") as fh:
+                self.assertEqual(fh.read(), before)
+
+    def test_class_oversize_translation_skipped(self):
+        # A translation encoding to >65535 bytes cannot fit a Utf8
+        # length field -- skip it (leave source) instead of OverflowError.
+        from core.patcher import patch_class_strings
+        data = _make_class_with_string("Hello Player")
+        out, n = patch_class_strings(data, {"Hello Player": "X" * 70000})
+        self.assertEqual(n, 0)
+        self.assertEqual(out, data)
+        out, n = patch_class_strings(data, {"Hello Player": "Halo"})
+        self.assertEqual(n, 1)
+
+    def test_translate_all_bypasses_filters(self):
+        ok, _ = jar_mod.should_collect("12345", translate_all=True)
+        self.assertTrue(ok)
+        ok, _ = jar_mod.should_collect("ab", translate_all=True)
+        self.assertTrue(ok)
+        ok, reason = jar_mod.should_collect("", translate_all=True)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "empty")
+
 
 if __name__ == "__main__":
     unittest.main()

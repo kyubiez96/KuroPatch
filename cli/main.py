@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import sys
+import zipfile
 
 # Allow running as ``python -m cli.main`` from the project root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -37,7 +38,18 @@ def _load_translations_json(path):
             raise ValueError(f"invalid JSON in {path}: {exc}")
     if not isinstance(data, dict) or not data:
         raise ValueError(f"{path} must contain a non-empty JSON object")
-    return {str(k): str(v) for k, v in data.items()}
+    # Values MUST be strings. A `collect --out` file maps
+    # {value: [origins]} -- feeding it back here would coerce the
+    # origin lists to "['...']" and patch game strings with garbage.
+    # Reject loudly instead of silently corrupting the jar.
+    for key, value in data.items():
+        if not isinstance(value, str):
+            raise ValueError(
+                f"{path}: translation for {key!r} is {type(value).__name__}, "
+                "not a string -- did you pass a `collect --out` file? "
+                "That file maps values to origin lists, not translations."
+            )
+    return {str(k): v for k, v in data.items()}
 
 
 def _default_out(jar_path, target):
@@ -88,6 +100,9 @@ def cmd_translate(args):
     res = _jar.collect_strings(args.jar, minimum=args.minimum)
     strings = res["strings"]
     print(f"collected {len(strings)} strings from {args.jar}")
+    if not strings:
+        print(f"nothing translatable found in {args.jar} -- no output written")
+        return
     if args.auto:
         translations = _auto_translate(strings, args)
     elif args.translations:
@@ -105,6 +120,9 @@ def cmd_patch(args):
     res = _jar.collect_strings(args.jar, minimum=args.minimum)
     strings = res["strings"]
     print(f"collected {len(strings)} strings from {args.jar}")
+    if not strings:
+        print(f"nothing translatable found in {args.jar} -- no output written")
+        return
     translations = _auto_translate(strings, args)
     out = args.out or _default_out(args.jar, args.target)
     stats = _jar.patch_jar(args.jar, translations, out)
@@ -144,7 +162,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         args.func(args)
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+    except (FileNotFoundError, ValueError, RuntimeError,
+            zipfile.BadZipFile, OSError) as exc:
         print(f"kpatch: error: {exc}", file=sys.stderr)
         return 1
     return 0

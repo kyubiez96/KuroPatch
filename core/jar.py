@@ -51,10 +51,18 @@ _CJK_RE = re.compile(r"[\u2e80-\u9fff]", re.UNICODE)
 
 
 def should_collect(text, minimum=3, translate_all=False):
-    """Cheap safety filter for collection. Returns (ok, reason)."""
+    """Cheap safety filter for collection. Returns (ok, reason).
+
+    With ``translate_all`` the cheap filters are bypassed (only the
+    empty check remains) -- the caller wants everything, including
+    technical tokens and short strings. Previously the flag was
+    accepted but had no effect (dead parameter).
+    """
     stripped = text.strip()
     if not stripped:
         return False, "empty"
+    if translate_all:
+        return True, ""
     if stripped.lower() in _TECHNICAL_TOKENS:
         return False, "technical-token"
     if len(stripped) < minimum and not _CJK_RE.search(stripped):
@@ -267,18 +275,23 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
                 except (OSError, ValueError):
                     continue
                 dirty = False
+                replaced_here = 0
                 for pack in packs:
                     for i, value in enumerate(pack.strings):
                         new = _match_translation(value, translations)
                         if new is not None:
                             pack.strings[i] = new
-                            stats["packs"] += 1
+                            replaced_here += 1
                             dirty = True
                 if dirty:
                     try:
                         rebuilt = build_resource(packs)
                     except ValueError:
                         continue
+                    # Only count after the rebuild succeeded -- a failed
+                    # build leaves the file untouched, so the stats must
+                    # not claim replacements that never landed.
+                    stats["packs"] += replaced_here
                     with open(ws_path, "wb") as fh:
                         fh.write(rebuilt)
         out = patcher.rebuild(out_path)

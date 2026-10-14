@@ -186,12 +186,22 @@ class PropertiesEntry:
     def escaped_key(self) -> str:
         return escape_value(self.key)
 
+    def escaped_key_with(self, charset: str = "utf-8") -> str:
+        """Key escaped for the file's write charset.
+
+        Keys are almost always ASCII, but a non-ASCII key in an ASCII
+        (Java 8) .properties file must be \\uXXXX-escaped -- writing it
+        raw would make to_bytes() raise UnicodeEncodeError on the
+        strict ASCII encode.
+        """
+        return escape_value(self.key, charset)
+
     @property
     def escaped_value(self) -> str:
         return escape_value(self.value)
 
     def render(self, charset: str = "utf-8") -> str:
-        return f"{self.lead}{self.escaped_key}{self.sep}{self.mid}{self.escape(charset)}{self.trail}{self.comment}"
+        return f"{self.lead}{self.escaped_key_with(charset)}{self.sep}{self.mid}{self.escape(charset)}{self.trail}{self.comment}"
 
     def escape(self, charset: str = "utf-8") -> str:
         return escape_value(self.value, charset)
@@ -624,6 +634,11 @@ def patch_class_strings(data: bytes, mapping: Dict[str, str]) -> Tuple[bytes, in
         length_pos, decoded = entry
         if decoded in mapping and mapping[decoded] != decoded:
             new_raw = _mutf8_encode(mapping[decoded])
+            # A Utf8 length field is 2 bytes: a translation encoding to
+            # more than 65535 bytes cannot be stored -- skip it (leave
+            # the source intact) instead of raising OverflowError.
+            if len(new_raw) > 0xFFFF:
+                continue
             old_len = int.from_bytes(data[length_pos : length_pos + 2], "big")
             edits.append((length_pos, 2 + old_len, len(new_raw).to_bytes(2, "big") + new_raw))
     if not edits:
@@ -780,6 +795,16 @@ class JarPatcher:
         if not output_name:
             raise ValueError("output_name is required")
         output_path = os.path.abspath(output_name)
+        # NEVER overwrite the input: opening the output for writing
+        # truncates the file while the source ZipFile still needs it --
+        # directory entries (read back from the source) would then hit a
+        # truncated central directory (BadZipFile) and the input would be
+        # left as a 22-byte empty zip. Refuse loudly instead.
+        if output_path == os.path.abspath(self.jar_path):
+            raise ValueError(
+                "output must differ from input -- refusing to overwrite "
+                f"the source archive: {output_path}"
+            )
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
         # Never feed our own output back into the archive.

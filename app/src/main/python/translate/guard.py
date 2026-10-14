@@ -28,10 +28,14 @@ _NUMBER_RE = re.compile(r"^(?=.*\d)[\d\s.,_+\-xXa-fA-F]+$")
 # URLs
 _URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
 
-# File paths: /sdcard/..., C:\..., something.apk, res/drawable
+# File paths: /sdcard/..., C:\..., something.apk, res/drawable.
+# The relative-path alternative requires TWO or more slashes: a single
+# "Word/Word" segment is far more often a UI label ("Save/Load",
+# "Yes/No", "On/Off") than a path. Single-slash lowercase paths
+# ("res/drawable") still get skipped -- by the identifier rule below.
 _PATH_RE = re.compile(
     r"^(?:/|\./|\.\./|[A-Za-z]:\\)"                   # absolute / dotted start
-    r"|^(?:[\w.\-]+/)+[\w.\-]+$"                       # multi-segment relative path
+    r"|^(?:[\w.\-]+/){2,}[\w.\-]+$"                    # multi-segment relative path (2+ slashes)
     r"|\.(apk|dex|so|png|jpg|xml|json|db|ttf|ogg|mp3)$",  # known extensions
     re.IGNORECASE,
 )
@@ -98,6 +102,11 @@ _VERSION_RE = re.compile(r"^v?\d+\.\d+(\.\d+)?([-_][\w.]+)?$", re.IGNORECASE)
 # *capitalised* word is usually a UI label ("Quit", "Pause") and passes.
 _IDENT_CHARS_RE = re.compile(r"[_.$/\-:]")
 
+# "Capitalized/Capitalized" (Save/Load, Yes/No, On/Off) is a UI label
+# pair, not a path or identifier -- it must reach the translator.
+# Lowercase "a/b", "res/x" and multi-slash "a/b/c" stay identifiers.
+_SLASH_LABEL_RE = re.compile(r"^[A-Z][a-z]+/[A-Z][a-z]+$")
+
 # CJK exemption: a single CJK char is already meaningful ("剑").
 _CJK_RE = re.compile(r"[\u2e80-\u9fff]")
 
@@ -132,7 +141,7 @@ def should_skip(text):
     # v1 heuristics (restored for the .jar flow: .properties values are
     # full of identifiers and bare tokens that must never reach a provider).
     if " " not in s:
-        if _IDENT_CHARS_RE.search(s):
+        if _IDENT_CHARS_RE.search(s) and not _SLASH_LABEL_RE.match(s):
             return True, "identifier"
         if s.islower() and s.isalpha():
             return True, "lower-token"

@@ -94,6 +94,28 @@ class TestShouldSkip(unittest.TestCase):
         self.assertTrue(skip)
         self.assertEqual(reason, "no-word")
 
+    def test_slash_ui_labels_not_paths(self):
+        # "Word/Word" UI labels must reach the translator -- the old
+        # path regex swallowed them as file paths.
+        for t in ["Save/Load", "Yes/No", "On/Off", "Win/Lose",
+                  "Attack/Defend", "Start/Stop"]:
+            skip, reason = should_skip(t)
+            self.assertFalse(skip, t)
+            self.assertEqual(reason, "", t)
+        # Real paths / identifiers still skip (single-slash lowercase
+        # paths fall through to the identifier rule).
+        for t, reason in [("res/drawable", "identifier"),
+                          ("images/logo", "identifier"),
+                          ("com/game/Main", "file-path"),
+                          ("a/b/c", "file-path"),
+                          ("a/b", "identifier"),
+                          ("menu_start", "identifier")]:
+            skip, got = should_skip(t)
+            self.assertTrue(skip, t)
+            self.assertEqual(got, reason, t)
+
+
+class TestExtractPlaceholders(unittest.TestCase):
     def test_real_text_not_skipped(self):
         skip, _ = should_skip("Welcome to the arena!")
         self.assertFalse(skip)
