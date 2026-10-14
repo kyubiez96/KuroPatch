@@ -135,10 +135,14 @@ def translate_strings(strings, target_lang="id", source_lang="en",
             last_error = f"placeholder mismatch: missing={check.missing}"
             translated = None
             attempt += 1
-            # retry once with an even stricter instruction
+            # Retry once with an even stricter instruction -- keeping
+            # the glossary keep-verbatim hint, which the old retry
+            # prompt dropped (a retried string could then mistranslate
+            # a brand term the first attempt had protected).
             prompt_text = (
                 "Translate ONLY. Do not explain. Copy every placeholder "
-                f"character-for-character.\n{text}"
+                "character-for-character.\n"
+                + glossary.protect_hint(text)
             )
 
         if translated is None:

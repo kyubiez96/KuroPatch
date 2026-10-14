@@ -331,6 +331,64 @@ class TestPropertiesEdgeCases(unittest.TestCase):
         _utf8, string_only = _parse_constant_pool(data)
         self.assertIn(1, string_only)
 
+    def test_bom_stripped_from_first_key(self):
+        # Round-2 audit: a UTF-8 BOM made the first key parse as
+        # "\ufeffhello", so key lookups for "hello" missed.
+        from core.patcher import PropertiesFile
+        pf = PropertiesFile.loads(b"\xef\xbb\xbfhello=world\n")
+        self.assertEqual([e.key for e in pf.entries], ["hello"])
+        # Unchanged file round-trips byte-for-byte (BOM preserved).
+        self.assertEqual(pf.to_bytes(), b"\xef\xbb\xbfhello=world\n")
+        # Changed file still patches the value.
+        pf.entries[0].value = "dunia"
+        self.assertIn(b"dunia", pf.to_bytes())
+
+    def test_class_oversize_boundary(self):
+        # Round-2 audit: the 64KB skip is a boundary -- exactly 65535
+        # bytes must patch, 65536 must skip. (The earlier probe used a
+        # fixture whose Utf8 was also the class name, so it never
+        # exercised this path at all.)
+        from core.patcher import patch_class_strings
+        data = _make_class_with_string("Hello Player")
+        out, n = patch_class_strings(data, {"Hello Player": "X" * 65535})
+        self.assertEqual(n, 1)
+        out, n = patch_class_strings(data, {"Hello Player": "X" * 65536})
+        self.assertEqual(n, 0)
+        self.assertEqual(out, data)
+        # Multibyte: 40000 U+00E9 = 80000 bytes -- skip on BYTES, not chars.
+        out, n = patch_class_strings(data, {"Hello Player": "\u00e9" * 40000})
+        self.assertEqual(n, 0)
+
+    def test_smali_unterminated_string_does_not_swallow_next_line(self):
+        # Round-2 (Agnes): the const-string body regex used to allow
+        # \n, so an unterminated string swallowed the next line's
+        # instruction into one bogus literal (corruption risk on
+        # malformed smali).
+        from core.patcher import iter_smali_literals
+        content = 'const-string v0, "abc\n    const-string v1, "def"\n'
+        self.assertEqual(
+            [d for _, _, d in iter_smali_literals(content)], ["def"])
+
+    def test_rebuild_preserves_stored_compression(self):
+        # Round-2 (Agnes): rebuild used `compress_type or ZIP_DEFLATED`,
+        # and ZIP_STORED is 0 (falsy) -- every stored entry was
+        # silently recompressed to deflated.
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "in.jar")
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr(zipfile.ZipInfo("stored.txt"), "hello",
+                           compress_type=zipfile.ZIP_STORED)
+            out = os.path.join(td, "out.jar")
+            p = JarPatcher(src, workspace=os.path.join(td, "ws"))
+            try:
+                p.extract()
+                p.rebuild(out)
+            finally:
+                p.close()
+            with zipfile.ZipFile(out) as z:
+                self.assertEqual(
+                    z.infolist()[0].compress_type, zipfile.ZIP_STORED)
+
 
 if __name__ == "__main__":
     unittest.main()

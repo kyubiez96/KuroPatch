@@ -158,6 +158,11 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(res[0].status, "skipped")
         self.assertEqual(res[0].translation, 12345)
 
+    def test_none_input_returns_empty(self):
+        # Round-2 audit: translate_strings(None) raised a raw
+        # TypeError from dict(None). Now: empty list, no crash.
+        self.assertEqual(translate_strings(None), [])
+
     def test_results_to_dict(self):
         res = translate_strings({"a": "Hi", "b": "1080x1920"},
                                 provider=MockProvider())
@@ -310,3 +315,102 @@ class TestFixedMapIntegration(unittest.TestCase):
             {"a": "Monday"}, provider=p, target_lang="en")
         self.assertEqual(res[0].translation, "ID:Monday")
         self.assertEqual(len(p.calls), 1)
+
+
+class TestRetryKeepsGlossaryHint(unittest.TestCase):
+    def test_retry_prompt_keeps_keep_verbatim_hint(self):
+        # Round-2 (Agnes): the retry prompt used to drop the glossary
+        # keep-verbatim hint, so a retried string could mistranslate a
+        # brand term the first attempt had protected.
+        class RetryMock(BaseProvider):
+            name = "retrymock"
+
+            def __init__(self):
+                self.calls = []
+                self.n = 0
+
+            def translate(self, text, source_lang="en", target_lang="id"):
+                self.calls.append(text)
+                core = text
+                prefix = ("Translate ONLY. Do not explain. Copy every "
+                          "placeholder character-for-character.\n")
+                if core.startswith(prefix):
+                    core = core[len(prefix):]
+                core = core.split("\n[Keep these")[0]
+                self.n += 1
+                if self.n == 1:
+                    return core.replace("%d", "")  # fail validation
+                return f"ID:{core}"
+
+        p = RetryMock()
+        res = translate_strings({"a": "Play KuroPatch %d"}, provider=p)
+        self.assertEqual(len(p.calls), 2)
+        self.assertIn("Keep these terms", p.calls[1])
+        self.assertIn("KuroPatch", p.calls[1])
+        self.assertEqual(res[0].translation, "ID:Play KuroPatch %d")
+
+
+class TestTruncatedResponseRejected(unittest.TestCase):
+    def test_finish_reason_length_raises(self):
+        # Round-2 (Agnes): a response truncated at max_tokens used to
+        # ship as a translation -- the validator cannot detect a
+        # mid-sentence cut when placeholders survive by luck.
+        import json
+        import urllib.request
+        from providers import AgnesProvider
+
+        class FakeResp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self):
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        payload = {"choices": [{"message": {"content": "Skor: %d terpotong"},
+                                "finish_reason": "length"}]}
+        orig = urllib.request.urlopen
+        urllib.request.urlopen = lambda req, timeout=None: FakeResp(payload)
+        try:
+            os.environ["AGNES_API_KEY"] = "dummy-for-test"
+            with self.assertRaises(RuntimeError):
+                AgnesProvider().translate("Score: %d cut off", "en", "id")
+        finally:
+            urllib.request.urlopen = orig
+            os.environ.pop("AGNES_API_KEY", None)
+
+    def test_finish_reason_stop_ok(self):
+        import json
+        import urllib.request
+        from providers import AgnesProvider
+
+        class FakeResp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self):
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        payload = {"choices": [{"message": {"content": "Skor: %d"},
+                                "finish_reason": "stop"}]}
+        orig = urllib.request.urlopen
+        urllib.request.urlopen = lambda req, timeout=None: FakeResp(payload)
+        try:
+            os.environ["AGNES_API_KEY"] = "dummy-for-test"
+            self.assertEqual(
+                AgnesProvider().translate("Score: %d", "en", "id"),
+                "Skor: %d")
+        finally:
+            urllib.request.urlopen = orig
+            os.environ.pop("AGNES_API_KEY", None)

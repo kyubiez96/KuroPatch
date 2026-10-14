@@ -441,7 +441,7 @@ def _ends_with_continuation(value_part: str) -> bool:
 # const-string v0, "Hello"
 # \x22 is a double quote, used so no quote escaping is needed inside the raw strings.
 _CONST_STRING_RE = re.compile(
-    r'(?P<head>\bconst-string(?:\s|/[\w$.-]+)*\s+[vp]\d+\s*,\s*\x22)(?P<body>(?:\\.|[^\x22\\])*)(?P<tail>\x22)'
+    r'(?P<head>\bconst-string(?:\s|/[\w$.-]+)*\s+[vp]\d+\s*,\s*\x22)(?P<body>(?:\\.|[^\x22\\\n])*)(?P<tail>\x22)'
 )
 _SMALI_LITERAL_RE = re.compile(r'\x22((?:\\.|[^\x22\\\n])*)\x22')
 
@@ -885,7 +885,11 @@ class JarPatcher:
                         data = handle.read()
 
                 new_info = zipfile.ZipInfo(name, date_time=info.date_time)
-                new_info.compress_type = info.compress_type or zipfile.ZIP_DEFLATED
+                # Preserve the original compression method EXACTLY:
+                # ZIP_STORED is 0, which is falsy -- the old
+                # `or ZIP_DEFLATED` silently recompressed every stored
+                # entry to deflated.
+                new_info.compress_type = info.compress_type
                 new_info.external_attr = info.external_attr
                 new_info.internal_attr = info.internal_attr
                 new_info.create_system = info.create_system

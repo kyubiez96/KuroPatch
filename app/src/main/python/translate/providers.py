@@ -92,6 +92,15 @@ class AgnesProvider(BaseProvider):
         except Exception as exc:
             raise RuntimeError(f"agnes provider request failed: {exc}") from exc
         try:
-            return data["choices"][0]["message"]["content"].strip()
+            choice = data["choices"][0]
+            content = choice["message"]["content"].strip()
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("agnes provider returned unexpected response") from exc
+        # A truncated response (max_tokens hit) is NOT a translation:
+        # the text is cut mid-sentence and the validator cannot detect
+        # that (placeholders may survive by luck). Fail instead of
+        # shipping a half-sentence -- the engine keeps the source.
+        if choice.get("finish_reason") == "length":
+            raise RuntimeError(
+                "agnes provider response truncated (max_tokens hit)")
+        return content

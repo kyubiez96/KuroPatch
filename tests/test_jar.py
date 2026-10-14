@@ -359,19 +359,35 @@ class TestPropertiesEdgeCases(unittest.TestCase):
         out, n = patch_class_strings(data, {"Hello Player": "\u00e9" * 40000})
         self.assertEqual(n, 0)
 
-    def test_class_modified_utf8_nul_round_trip(self):
-        # Round-2 audit: Java modified UTF-8 encodes NUL as \xc0\x80.
-        from core.patcher import patch_class_strings, iter_class_strings
-        raw = b"A\xc0\x80B"
-        cp = struct.pack(">H", 3)
-        cp += b"\x01" + struct.pack(">H", len(raw)) + raw  # Utf8 #1
-        cp += b"\x08" + struct.pack(">H", 1)  # String #2 -> #1
-        data = b"\xca\xfe\xba\xbe" + struct.pack(">HH", 0, 52) + cp
-        data += struct.pack(">HHHHHH", 0x0021, 2, 2, 0, 0, 0)
-        self.assertEqual(list(iter_class_strings(data)), [(1, "A\x00B")])
-        out, n = patch_class_strings(data, {"A\x00B": "X\x00Y"})
-        self.assertEqual(n, 1)
-        self.assertEqual(list(iter_class_strings(out)), [(1, "X\x00Y")])
+    def test_smali_unterminated_string_does_not_swallow_next_line(self):
+        # Round-2 (Agnes): the const-string body regex used to allow
+        # \n, so an unterminated string swallowed the next line's
+        # instruction into one bogus literal (corruption risk on
+        # malformed smali).
+        from core.patcher import iter_smali_literals
+        content = 'const-string v0, "abc\n    const-string v1, "def"\n'
+        self.assertEqual(
+            [d for _, _, d in iter_smali_literals(content)], ["def"])
+
+    def test_rebuild_preserves_stored_compression(self):
+        # Round-2 (Agnes): rebuild used `compress_type or ZIP_DEFLATED`,
+        # and ZIP_STORED is 0 (falsy) -- every stored entry was
+        # silently recompressed to deflated.
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "in.jar")
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr(zipfile.ZipInfo("stored.txt"), "hello",
+                           compress_type=zipfile.ZIP_STORED)
+            out = os.path.join(td, "out.jar")
+            p = JarPatcher(src, workspace=os.path.join(td, "ws"))
+            try:
+                p.extract()
+                p.rebuild(out)
+            finally:
+                p.close()
+            with zipfile.ZipFile(out) as z:
+                self.assertEqual(
+                    z.infolist()[0].compress_type, zipfile.ZIP_STORED)
 
 
 if __name__ == "__main__":

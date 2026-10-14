@@ -96,6 +96,12 @@ class MainActivity : AppCompatActivity() {
         // which would have patched jar B with jar A's strings).
         extractedStrings = emptyMap()
         translatedStrings = emptyMap()
+        // A new pick also invalidates the previous PATCH output:
+        // Save / Share must not keep serving jar A's file after the
+        // user has moved on to jar B (stale-output bug).
+        patchedJar = null
+        binding.btnSave.isEnabled = false
+        binding.btnShare.isEnabled = false
         binding.tvJarName.text = jarName
         binding.tvStatus.text = "Picked: $jarName — extract to start"
         binding.btnExtract.isEnabled = true
