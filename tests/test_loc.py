@@ -37,6 +37,7 @@ def _english():
     return loc_mod.parse(_read_loc("TRAD_english.loc"))
 
 
+@unittest.skipUnless(os.path.exists(JAR), "Kovak's Castlevania jar not present")
 class TestLocParseBuild(unittest.TestCase):
     def test_round_trip_identity_all_six_files(self):
         # Strongest structural proof: parse + rebuild with NO changes
@@ -81,6 +82,7 @@ class TestLocParseBuild(unittest.TestCase):
             loc_mod.build(["x"] * 401)
 
 
+@unittest.skipUnless(os.path.exists(JAR), "Kovak's Castlevania jar not present")
 class TestLocModifiedUtf8(unittest.TestCase):
     def test_nul_round_trip(self):
         self.assertEqual(loc_mod.decode_modified_utf8(b"\xc0\x80"), "\x00")
@@ -119,6 +121,7 @@ def _mutated(fn):
     return strings
 
 
+@unittest.skipUnless(os.path.exists(JAR), "Kovak's Castlevania jar not present")
 class TestLocValidate(unittest.TestCase):
     def test_identity_passes(self):
         strings = _english()
