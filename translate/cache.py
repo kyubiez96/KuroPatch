@@ -36,8 +36,12 @@ class TranslationCache:
                 # A cache file containing a JSON list / string / number
                 # is corrupt -- .get() on it crashed with AttributeError.
                 # Treat it like a missing cache, not a fatal error.
+                # ValueError covers BOTH json.JSONDecodeError AND
+                # UnicodeDecodeError (a non-UTF-8 cache file used to
+                # crash TranslationCache.__init__ with a raw
+                # UnicodeDecodeError -- round-1 final audit).
                 self._data = data if isinstance(data, dict) else {}
-            except (json.JSONDecodeError, OSError):
+            except (ValueError, OSError):
                 self._data = {}
 
     def get(self, text, source_lang, target_lang, provider_name):

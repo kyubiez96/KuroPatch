@@ -148,6 +148,19 @@ class TestCache(unittest.TestCase):
             self.assertIsNone(c.get("World", "en", "id", "agnes"))
             self.assertEqual(c.get("Good", "en", "id", "agnes"), "Bagus")
 
+    def test_non_utf8_file_recovers(self):
+        # Final audit round 1: a cache file with non-UTF-8 bytes
+        # crashed TranslationCache.__init__ with a raw
+        # UnicodeDecodeError (only JSONDecodeError was caught).
+        # Cache is best-effort -- treat it like a missing cache.
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.json")
+            with open(p, "wb") as fh:
+                fh.write(b"\xff\xfe\x00binary garbage")
+            c = TranslationCache(p)  # must not raise
+            self.assertEqual(len(c), 0)
+            self.assertIsNone(c.get("hi", "en", "id", "agnes"))
+
     def test_cache_path_is_directory_save_does_not_crash(self):
         # Round-3 audit: a directory sitting at the cache path made
         # save() raise IsADirectoryError (os.replace file onto dir).

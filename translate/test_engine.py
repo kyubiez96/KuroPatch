@@ -477,6 +477,42 @@ class TestTruncatedResponseRejected(unittest.TestCase):
             os.environ.pop("AGNES_API_KEY", None)
 
 
+    def test_null_content_raises_clear_error(self):
+        # Final audit round 1: a null content (content filter /
+        # empty reply) died with a raw AttributeError on .strip()
+        # -- first_error showed "NoneType has no attribute 'strip'".
+        # Must raise a clear RuntimeError instead.
+        import json
+        import urllib.request
+        from providers import AgnesProvider
+
+        class FakeResp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self):
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        payload = {"choices": [{"message": {"content": None},
+                                "finish_reason": "stop"}]}
+        orig = urllib.request.urlopen
+        urllib.request.urlopen = lambda req, timeout=None: FakeResp(payload)
+        try:
+            os.environ["AGNES_API_KEY"] = "dummy-for-test"
+            with self.assertRaises(RuntimeError) as ctx:
+                AgnesProvider().translate("Hello", "en", "id")
+            self.assertIn("no content", str(ctx.exception))
+        finally:
+            urllib.request.urlopen = orig
+            os.environ.pop("AGNES_API_KEY", None)
+
+
 class TestBatchAbortOnProviderDeath(unittest.TestCase):
     def test_dead_provider_aborts_after_three_errors(self):
         # Round-4 audit: a dead network used to mean one timeout PER

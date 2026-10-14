@@ -93,9 +93,17 @@ class AgnesProvider(BaseProvider):
             raise RuntimeError(f"agnes provider request failed: {exc}") from exc
         try:
             choice = data["choices"][0]
-            content = choice["message"]["content"].strip()
+            content = choice["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("agnes provider returned unexpected response") from exc
+        # A null / non-string content (content filter, empty reply)
+        # used to die here with a raw AttributeError on .strip() --
+        # the engine caught it, but first_error showed a cryptic
+        # "NoneType has no attribute 'strip'". Fail with a clear
+        # message instead (round-1 final audit).
+        if not isinstance(content, str):
+            raise RuntimeError("agnes provider returned no content")
+        content = content.strip()
         # A truncated response (max_tokens hit) is NOT a translation:
         # the text is cut mid-sentence and the validator cannot detect
         # that (placeholders may survive by luck). Fail instead of
