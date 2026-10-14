@@ -131,13 +131,22 @@ class TestEngine(unittest.TestCase):
 
 class FakeJavaMap:
     """Simulates a Chaquopy Java LinkedHashMap proxy: no .items(),
-    but .entrySet() / .get() like the real bridge object."""
+    but .entrySet() / .get() like the real bridge object.
+
+    CRITICAL: a REAL Chaquopy Java Set proxy is NOT Python-iterable --
+    ``for e in entry_set`` raises
+    ``TypeError: 'LinkedHashMap$LinkedEntrySet' object is not iterable``.
+    FakeJavaSet reproduces that: ``__iter__`` raises, traversal is ONLY
+    via ``.iterator()`` / ``hasNext()`` / ``next()``. A test using a
+    plain Python list for entrySet would HIDE this crash (v2.0.3 bug).
+    """
 
     def __init__(self, data):
         self._data = dict(data)
 
     def entrySet(self):
-        return [FakeJavaEntry(k, v) for k, v in self._data.items()]
+        return FakeJavaSet([FakeJavaEntry(k, v)
+                            for k, v in self._data.items()])
 
     def get(self, key):
         return self._data.get(key)
@@ -147,6 +156,36 @@ class FakeJavaMap:
 
     def __bool__(self):
         return bool(self._data)
+
+
+class FakeJavaSet:
+    """Simulates a real Chaquopy LinkedHashMap$LinkedEntrySet proxy."""
+
+    def __init__(self, entries):
+        self._entries = list(entries)
+
+    def __iter__(self):
+        raise TypeError(
+            "'LinkedHashMap$LinkedEntrySet' object is not iterable")
+
+    def iterator(self):
+        return FakeJavaIterator(self._entries)
+
+
+class FakeJavaIterator:
+    def __init__(self, entries):
+        self._entries = entries
+        self._i = 0
+
+    def hasNext(self):
+        return self._i < len(self._entries)
+
+    def next(self):
+        if not self.hasNext():
+            raise StopIteration
+        e = self._entries[self._i]
+        self._i += 1
+        return e
 
 
 class FakeJavaEntry:

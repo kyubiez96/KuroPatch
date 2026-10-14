@@ -122,6 +122,9 @@ class TestJarPipeline(unittest.TestCase):
     def test_patch_accepts_java_map(self):
         # Regression: Kotlin passes a Java LinkedHashMap to patch_jar
         # via Chaquopy; it has no .items() and fails isinstance(dict).
+        # A REAL Chaquopy Java Set proxy is NOT Python-iterable either
+        # -- ``for e in entry_set`` raises TypeError. FakeJavaSet
+        # reproduces that: traversal ONLY via .iterator()/hasNext()/next().
         class FakeEntry:
             def __init__(self, k, v):
                 self._k, self._v = k, v
@@ -132,13 +135,39 @@ class TestJarPipeline(unittest.TestCase):
             def getValue(self):
                 return self._v
 
+        class FakeJavaSet:
+            def __init__(self, entries):
+                self._entries = list(entries)
+
+            def __iter__(self):
+                raise TypeError(
+                    "'LinkedHashMap$LinkedEntrySet' object is not iterable")
+
+            def iterator(self):
+                return FakeJavaIterator(self._entries)
+
+        class FakeJavaIterator:
+            def __init__(self, entries):
+                self._entries = entries
+                self._i = 0
+
+            def hasNext(self):
+                return self._i < len(self._entries)
+
+            def next(self):
+                if not self.hasNext():
+                    raise StopIteration
+                e = self._entries[self._i]
+                self._i += 1
+                return e
+
         class FakeJavaMap:
             def __init__(self, data):
                 self._data = dict(data)
 
             def entrySet(self):
-                return [FakeEntry(k, v)
-                        for k, v in self._data.items()]
+                return FakeJavaSet([FakeEntry(k, v)
+                                    for k, v in self._data.items()])
 
             def get(self, k):
                 return self._data.get(k)
@@ -152,6 +181,12 @@ class TestJarPipeline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             jar = _make_fixture(tmp)
             out = os.path.join(tmp, "out.jar")
+            # Fidelity lock: a real Chaquopy Set raises TypeError on
+            # `for`. If this stops raising, the double no longer
+            # reproduces the on-device crash.
+            with self.assertRaises(TypeError):
+                list(FakeJavaMap(
+                    {"Start Game": "Mulai Game"}).entrySet())
             stats = jar_mod.patch_jar(
                 jar, FakeJavaMap({"Start Game": "Mulai Game"}), out)
             self.assertGreaterEqual(stats["properties"], 1)

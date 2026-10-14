@@ -38,6 +38,13 @@ def _coerce_str_dict(mapping):
     them like a Python dict raises
     ``AttributeError: 'LinkedHashMap' object has no attribute 'items'``.
     Convert via ``entrySet()`` when needed. Plain dicts pass through.
+
+    CRITICAL: a real Chaquopy Java ``Set`` proxy is NOT Python-iterable
+    -- ``for e in entry_set`` raises
+    ``TypeError: 'LinkedHashMap$LinkedEntrySet' object is not iterable``.
+    Traverse it ONLY via the explicit Java ``Iterator`` protocol:
+    ``iterator()`` / ``hasNext()`` / ``next()`` -- plain method calls,
+    no Python iteration protocol.
     """
     if isinstance(mapping, dict):
         return mapping
@@ -46,7 +53,18 @@ def _coerce_str_dict(mapping):
     except AttributeError:
         # Not a Java Map either -- let dict() raise a clear TypeError.
         return dict(mapping)
-    return {str(e.getKey()): str(e.getValue()) for e in entry_set}
+    result = {}
+    try:
+        it = entry_set.iterator()
+    except AttributeError:
+        # entrySet already Python-iterable (non-Chaquopy callers).
+        for e in entry_set:
+            result[str(e.getKey())] = str(e.getValue())
+        return result
+    while it.hasNext():
+        e = it.next()
+        result[str(e.getKey())] = str(e.getValue())
+    return result
 
 
 def translate_strings(strings, target_lang="id", source_lang="en",

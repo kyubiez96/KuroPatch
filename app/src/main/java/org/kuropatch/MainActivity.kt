@@ -10,6 +10,7 @@ import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -113,6 +114,21 @@ class MainActivity : AppCompatActivity() {
     private fun providerName(): String =
         if (binding.spinnerProvider.selectedItemPosition == 0) "agnes" else "passthrough"
 
+    /**
+     * Convert a Kotlin Map to a REAL Python dict before passing it to
+     * Python via Chaquopy. Chaquopy passes Kotlin Maps as Java Map
+     * proxies (LinkedHashMap) which Python code cannot iterate with
+     * .items() or a for-loop -- belt + suspenders with the Python-side
+     * _coerce_str_dict(): either side alone is sufficient.
+     */
+    private fun toPyDict(py: Python, map: Map<String, String>): PyObject {
+        val pyDict = py.getModule("builtins").callAttr("dict")
+        for ((k, v) in map) {
+            pyDict.callAttr("__setitem__", k, v)
+        }
+        return pyDict
+    }
+
     private fun showApkNotice() {
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.apk_not_supported_title)
@@ -178,7 +194,7 @@ class MainActivity : AppCompatActivity() {
                     providers.get("PassthroughProvider")!!.callAttr("__call__")
                 }
                 val results = engine.callAttr("translate_strings",
-                    extractedStrings, langCode(), "en", provider)
+                    toPyDict(py, extractedStrings), langCode(), "en", provider)
                 val done = engine.callAttr("results_to_dict", results)
                 val translated: Map<String, String> = done.asMap()
                     .map { it.key.toString() to it.value.toString() }.toMap()
@@ -213,7 +229,7 @@ class MainActivity : AppCompatActivity() {
                 val outJar = File(outDir,
                     jarName.replace(".jar", "_${langCode()}.jar", ignoreCase = true))
                 jarMod.callAttr("patch_jar",
-                    jarFile.absolutePath, translatedStrings,
+                    jarFile.absolutePath, toPyDict(py, translatedStrings),
                     outJar.absolutePath)
                 runOnUiThread {
                     setBusy(false)
