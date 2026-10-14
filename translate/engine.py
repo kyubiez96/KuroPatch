@@ -30,6 +30,25 @@ class TranslateResult:
                 f"detail={self.detail!r})")
 
 
+def _coerce_str_dict(mapping):
+    """Coerce a mapping to a real ``{str: str}`` dict.
+
+    Chaquopy passes Kotlin/Java maps to Python as Java ``Map`` proxies
+    (e.g. ``LinkedHashMap``), which have no ``.items()`` -- iterating
+    them like a Python dict raises
+    ``AttributeError: 'LinkedHashMap' object has no attribute 'items'``.
+    Convert via ``entrySet()`` when needed. Plain dicts pass through.
+    """
+    if isinstance(mapping, dict):
+        return mapping
+    try:
+        entry_set = mapping.entrySet()
+    except AttributeError:
+        # Not a Java Map either -- let dict() raise a clear TypeError.
+        return dict(mapping)
+    return {str(e.getKey()): str(e.getValue()) for e in entry_set}
+
+
 def translate_strings(strings, target_lang="id", source_lang="en",
                       provider=None, cache=None, glossary=None,
                       max_retries=1):
@@ -45,6 +64,7 @@ def translate_strings(strings, target_lang="id", source_lang="en",
     """
     provider = provider or PassthroughProvider()
     glossary = glossary or Glossary()
+    strings = _coerce_str_dict(strings)
 
     results = []
     for key, text in strings.items():

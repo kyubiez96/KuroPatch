@@ -138,6 +138,25 @@ def collect_strings(jar_path, minimum=3, translate_all=False, workspace=None):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _coerce_str_dict(mapping):
+    """Coerce a mapping to a real ``{str: str}`` dict.
+
+    Chaquopy passes Kotlin/Java maps to Python as Java ``Map`` proxies
+    (e.g. ``LinkedHashMap``), which have no ``.items()`` -- using them
+    like a Python dict raises
+    ``AttributeError: 'LinkedHashMap' object has no attribute 'items'``.
+    Convert via ``entrySet()`` when needed. Plain dicts pass through.
+    """
+    if isinstance(mapping, dict):
+        return mapping
+    try:
+        entry_set = mapping.entrySet()
+    except AttributeError:
+        # Not a Java Map either -- let dict() raise a clear TypeError.
+        return dict(mapping)
+    return {str(e.getKey()): str(e.getValue()) for e in entry_set}
+
+
 def _match_translation(raw, translations):
     """Match a raw string value against the (stripped-keyed) translations.
 
@@ -169,7 +188,8 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
     stats dict: {"properties": n, "smali": n, "classes": n, "packs": n,
     "out": out_path}.
     """
-    if not isinstance(translations, dict) or not translations:
+    translations = _coerce_str_dict(translations)
+    if not translations:
         raise ValueError("translations must be a non-empty dict")
     tmp = workspace or tempfile.mkdtemp(prefix="kpatch-patch-")
     patcher = JarPatcher(jar_path, workspace=tmp)

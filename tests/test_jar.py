@@ -119,6 +119,46 @@ class TestJarPipeline(unittest.TestCase):
             self.assertEqual(stats["smali"], 0)
             self.assertEqual(stats["classes"], 0)
 
+    def test_patch_accepts_java_map(self):
+        # Regression: Kotlin passes a Java LinkedHashMap to patch_jar
+        # via Chaquopy; it has no .items() and fails isinstance(dict).
+        class FakeEntry:
+            def __init__(self, k, v):
+                self._k, self._v = k, v
+
+            def getKey(self):
+                return self._k
+
+            def getValue(self):
+                return self._v
+
+        class FakeJavaMap:
+            def __init__(self, data):
+                self._data = dict(data)
+
+            def entrySet(self):
+                return [FakeEntry(k, v)
+                        for k, v in self._data.items()]
+
+            def get(self, k):
+                return self._data.get(k)
+
+            def __len__(self):
+                return len(self._data)
+
+            def __bool__(self):
+                return bool(self._data)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            jar = _make_fixture(tmp)
+            out = os.path.join(tmp, "out.jar")
+            stats = jar_mod.patch_jar(
+                jar, FakeJavaMap({"Start Game": "Mulai Game"}), out)
+            self.assertGreaterEqual(stats["properties"], 1)
+            with zipfile.ZipFile(out) as zf:
+                self.assertIn("Mulai Game",
+                              zf.read("strings/messages.properties").decode())
+
     def test_whitespace_fragment_patched_and_preserved(self):
         # .class pool strings may carry meaningful surrounding whitespace
         # (format fragments like ", num samples: "). Collection strips

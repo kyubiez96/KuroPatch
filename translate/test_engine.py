@@ -87,6 +87,48 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(d["b"], "1080x1920")
 
 
+class FakeJavaMap:
+    """Simulates a Chaquopy Java LinkedHashMap proxy: no .items(),
+    but .entrySet() / .get() like the real bridge object."""
+
+    def __init__(self, data):
+        self._data = dict(data)
+
+    def entrySet(self):
+        return [FakeJavaEntry(k, v) for k, v in self._data.items()]
+
+    def get(self, key):
+        return self._data.get(key)
+
+    def __len__(self):
+        return len(self._data)
+
+    def __bool__(self):
+        return bool(self._data)
+
+
+class FakeJavaEntry:
+    def __init__(self, key, value):
+        self._key, self._value = key, value
+
+    def getKey(self):
+        return self._key
+
+    def getValue(self):
+        return self._value
+
+
+class TestJavaMapBoundary(unittest.TestCase):
+    """Kotlin passes Java Maps to Python via Chaquopy; the engine must
+    coerce them (regression: 'LinkedHashMap' has no attribute 'items')."""
+
+    def test_translate_accepts_java_map(self):
+        res = translate_strings(
+            FakeJavaMap({"k1": "Hello"}), provider=MockProvider())
+        self.assertEqual(res[0].status, "translated")
+        self.assertEqual(res[0].translation, "ID:Hello")
+
+
 class TestAgnesProviderKeyHandling(unittest.TestCase):
     def test_missing_key_raises(self):
         from providers import AgnesProvider
