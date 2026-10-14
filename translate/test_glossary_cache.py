@@ -227,10 +227,15 @@ class TestCache(unittest.TestCase):
             c = TranslationCache(p)  # must not raise on load
             c.put("good", "en", "id", "agnes", "bagus")
             c.save()  # must not raise (RecursionError)
-            # The poisoned file is still on disk (write dropped);
-            # a fresh cache sees the same corrupt content, not a crash.
+            # Either the poison was dropped at load (save wrote the new
+            # entry) or the write was dropped at save (poison preserved).
+            # Both are safe: no crash, and a fresh cache loads fine.
+            # The old assertIsNone assumed only the second path, but
+            # whether json.load raises on 1500-deep input depends on
+            # the platform's C-stack / Python build -- CI hit the
+            # first path, local runs the second. Assert the invariant.
             c2 = TranslationCache(p)
-            self.assertIsNone(c2.get("good", "en", "id", "agnes"))
+            self.assertIn(c2.get("good", "en", "id", "agnes"), (None, "bagus"))
 
 
 class TestFixedTranslations(unittest.TestCase):
