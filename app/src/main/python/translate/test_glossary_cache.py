@@ -75,6 +75,19 @@ class TestLanguageNames(unittest.TestCase):
         self.assertEqual(g.lookup_language("ENGLISH (UK)"), "Inggris (UK)")
         self.assertEqual(g.lookup_language("Deutsch (DE)"), "Jerman (DE)")
 
+    def test_new_autonyms(self):
+        # Final audit round 1: these autonyms were missing -- a game
+        # offering Serbian / Slovak / Kurdish / Malay-English would
+        # have had its language name translated (same brick as
+        # Castlevania). "Slowakia" matches the glossary's existing
+        # Indonesian spelling (cf. "slovak" -> "Slowakia").
+        g = Glossary()
+        self.assertEqual(g.lookup_language("Srpski"), "Serbia")
+        self.assertEqual(g.lookup_language("Slovenčina"), "Slowakia")
+        self.assertEqual(g.lookup_language("Kurdî"), "Kurdi")
+        self.assertEqual(g.lookup_language("Kurdi"), "Kurdi")
+        self.assertEqual(g.lookup_language("Bahasa Inggeris"), "Inggris")
+
     def test_region_suffix_rejects(self):
         g = Glossary()
         self.assertIsNone(g.lookup_language("English ()"))  # empty region
