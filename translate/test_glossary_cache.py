@@ -63,6 +63,24 @@ class TestLanguageNames(unittest.TestCase):
         self.assertIsNone(g.lookup_language(""))
         self.assertIsNone(g.lookup_language("Inggris"))
 
+    def test_region_suffix(self):
+        g = Glossary()
+        # "Name (Region)": base translated, region kept verbatim.
+        self.assertEqual(g.lookup_language("English (US)"), "Inggris (US)")
+        self.assertEqual(g.lookup_language("Español (México)"),
+                         "Spanyol (México)")
+        self.assertEqual(g.lookup_language("Português (Brasil)"),
+                         "Portugis (Brasil)")
+        self.assertEqual(g.lookup_language("ENGLISH (UK)"), "Inggris (UK)")
+        self.assertEqual(g.lookup_language("Deutsch (DE)"), "Jerman (DE)")
+
+    def test_region_suffix_rejects(self):
+        g = Glossary()
+        self.assertIsNone(g.lookup_language("English ()"))  # empty region
+        self.assertIsNone(g.lookup_language("English (US) (extra)"))
+        self.assertIsNone(g.lookup_language("Hello (World)"))  # unknown base
+        self.assertIsNone(g.lookup_language("(US) English"))
+
 
 class TestCache(unittest.TestCase):
     def test_put_get(self):

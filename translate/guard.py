@@ -36,6 +36,57 @@ _PATH_RE = re.compile(
 # Tag-only strings: nothing but markup tags, e.g. "<b></b>", "<xliff:g/>".
 _TAGS_ONLY_RE = re.compile(r"^(?:\s*<[^>]+>\s*)+$")
 
+# ISO 639-1 (2-letter) + ISO 639-2 (3-letter, for mapped languages) codes.
+# A bare code ("EN", "es", "ENG") is a language tag, never UI text.
+# "no" is DELIBERATELY excluded: a bare "No" is far more often the
+# Yes/No dialog answer than the Norwegian code -- skipping it would
+# keep "No" untranslated in dialogs. Same for "hi" (greeting, far more
+# common than the Hindi tag) and "yo" (slang greeting vs Yoruba tag).
+_ISO_LANG_CODES = frozenset([
+    # ISO 639-1 (2-letter), minus "no" (see above)
+    "aa", "ab", "ae", "af", "ak", "am", "an", "ar", "as", "av", "ay", "az",
+    "ba", "be", "bg", "bh", "bi", "bm", "bn", "bo", "br", "bs",
+    "ca", "ce", "ch", "co", "cr", "cs", "cu", "cv", "cy",
+    "da", "de", "dv", "dz",
+    "ee", "el", "en", "eo", "es", "et", "eu",
+    "fa", "ff", "fi", "fj", "fo", "fr", "fy",
+    "ga", "gd", "gl", "gn", "gu", "gv",
+    "ha", "he", "ho", "hr", "ht", "hu", "hy", "hz",
+    "ia", "id", "ie", "ig", "ii", "ik", "io", "is", "it", "iu",
+    "ja", "jv",
+    "ka", "kg", "ki", "kj", "kk", "kl", "km", "kn", "ko", "kr", "ks",
+    "ku", "kv", "kw", "ky",
+    "la", "lb", "lg", "li", "ln", "lo", "lt", "lu", "lv",
+    "mg", "mh", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my",
+    "na", "nb", "nd", "ne", "ng", "nl", "nn", "nr", "nv", "ny",
+    "oc", "oj", "om", "or", "os",
+    "pa", "pi", "pl", "ps", "pt",
+    "qu",
+    "rm", "rn", "ro", "ru", "rw",
+    "sa", "sc", "sd", "se", "sg", "si", "sk", "sl", "sm", "sn", "so",
+    "sq", "sr", "ss", "st", "su", "sv", "sw",
+    "ta", "te", "tg", "th", "ti", "tk", "tl", "tn", "to", "tr", "ts",
+    "tt", "ty",
+    "ug", "uk", "ur", "uz",
+    "ve", "vi", "vo",
+    "wa", "wo",
+    "xh", "yi",
+    "za", "zh", "zu",
+    # ISO 639-2 (3-letter) for mapped languages (B + T variants)
+    "eng", "spa", "deu", "ger", "fra", "fre", "ita", "por", "nld", "dut",
+    "rus", "jpn", "kor", "zho", "chi", "ara", "hin", "tha", "vie", "ind",
+    "msa", "may", "swe", "fin", "nor", "dan", "ell", "gre", "heb", "ukr",
+    "bul", "ron", "rum", "cat", "glg", "eus", "baq", "epo", "lat", "tgl",
+    "pan", "ben", "tam", "tel", "mar", "guj", "kan", "mal", "nep", "sin",
+    "mya", "bur", "khm", "lao", "mon", "kat", "geo", "hye", "arm", "aze",
+    "kaz", "uzb", "tat", "slk", "slo", "slv", "hrv", "scr", "srp", "scc",
+    "bos", "mkd", "mac", "sqi", "alb", "lav", "lit", "est", "isl", "ice",
+    "gle", "cym", "wel", "mlt", "swa", "afr", "yor", "ibo", "hau", "amh",
+    "som", "zul", "xho", "sna", "yid", "fas", "per", "pus", "kur", "urd",
+    "snd", "asm", "ori", "san", "pli", "fil", "ces", "cze", "hun", "tur",
+    "pol",
+])
+
 # Version strings: v1.2.3, 1.0.0, 2.4.1-beta
 _VERSION_RE = re.compile(r"^v?\d+\.\d+(\.\d+)?([-_][\w.]+)?$", re.IGNORECASE)
 
@@ -58,6 +109,11 @@ def should_skip(text):
     s = text.strip()
     if not s:
         return True, "empty"
+    # Bare ISO language code ("EN", "es", "ENG") -- a language tag, never
+    # UI text. Checked before the number rule: "DE" would otherwise be
+    # misclassified as a hex "number".
+    if s.isalpha() and len(s) in (2, 3) and s.lower() in _ISO_LANG_CODES:
+        return True, "language-code"
     if _DIMENSION_RE.search(s):
         return True, "screen-dimension"
     if _URL_RE.search(s):

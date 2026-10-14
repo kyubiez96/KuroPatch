@@ -63,6 +63,24 @@ class TestLanguageNames(unittest.TestCase):
         self.assertIsNone(g.lookup_language(""))
         self.assertIsNone(g.lookup_language("Inggris"))
 
+    def test_region_suffix(self):
+        g = Glossary()
+        # "Name (Region)": base translated, region kept verbatim.
+        self.assertEqual(g.lookup_language("English (US)"), "Inggris (US)")
+        self.assertEqual(g.lookup_language("Español (México)"),
+                         "Spanyol (México)")
+        self.assertEqual(g.lookup_language("Português (Brasil)"),
+                         "Portugis (Brasil)")
+        self.assertEqual(g.lookup_language("ENGLISH (UK)"), "Inggris (UK)")
+        self.assertEqual(g.lookup_language("Deutsch (DE)"), "Jerman (DE)")
+
+    def test_region_suffix_rejects(self):
+        g = Glossary()
+        self.assertIsNone(g.lookup_language("English ()"))  # empty region
+        self.assertIsNone(g.lookup_language("English (US) (extra)"))
+        self.assertIsNone(g.lookup_language("Hello (World)"))  # unknown base
+        self.assertIsNone(g.lookup_language("(US) English"))
+
 
 class TestCache(unittest.TestCase):
     def test_put_get(self):
@@ -101,3 +119,38 @@ class TestCache(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFixedTranslations(unittest.TestCase):
+    def test_day_month_ui_terms(self):
+        from glossary import lookup_fixed
+        # Same failure mode as language names: bare short strings the
+        # LLM hallucinates on. Exact matches only, never the provider.
+        self.assertEqual(lookup_fixed("Monday"), "Senin")
+        self.assertEqual(lookup_fixed("January"), "Januari")
+        self.assertEqual(lookup_fixed("Yes"), "Ya")
+        self.assertEqual(lookup_fixed("Cancel"), "Batal")
+        self.assertEqual(lookup_fixed("Game Over"), "Game Over")
+
+    def test_case_and_whitespace_insensitive(self):
+        from glossary import lookup_fixed
+        self.assertEqual(lookup_fixed("  MONDAY  "), "Senin")
+        self.assertEqual(lookup_fixed("february"), "Februari")
+
+    def test_no_partial_matches(self):
+        from glossary import lookup_fixed
+        self.assertIsNone(lookup_fixed("Monday morning"))
+        self.assertIsNone(lookup_fixed("Hello"))
+        self.assertIsNone(lookup_fixed(""))
+        self.assertIsNone(lookup_fixed("Yes please"))
+
+    def test_no_overlap_with_language_names(self):
+        # LANGUAGE_NAMES_ID is the single source of truth for language
+        # names; this table must not duplicate it.
+        from glossary import FIXED_TRANSLATIONS, LANGUAGE_NAMES_ID
+        overlap = set(FIXED_TRANSLATIONS["id"]) & set(LANGUAGE_NAMES_ID)
+        self.assertEqual(overlap, set())
+
+    def test_unknown_target_lang(self):
+        from glossary import lookup_fixed
+        self.assertIsNone(lookup_fixed("Monday", target_lang="en"))

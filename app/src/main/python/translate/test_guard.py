@@ -55,7 +55,23 @@ class TestShouldSkip(unittest.TestCase):
         skip, _ = should_skip("Quit")
         self.assertFalse(skip)
 
-    def test_lower_token_skipped(self):
+    def test_language_codes_skipped(self):
+        # Bare ISO codes are language tags, never UI text -- in ANY case.
+        for t in ["EN", "ES", "DE", "en", "es", "ENG", "IT", "FR"]:
+            skip, reason = should_skip(t)
+            self.assertTrue(skip, t)
+            self.assertEqual(reason, "language-code", t)
+        # "No" is deliberately NOT treated as the Norwegian code: a bare
+        # "No" is far more often the Yes/No dialog answer.
+        skip, _ = should_skip("No")
+        self.assertFalse(skip)
+        skip, _ = should_skip("NO")
+        self.assertFalse(skip)
+        # Non-codes still pass through.
+        skip, _ = should_skip("OK")
+        self.assertFalse(skip)
+        skip, _ = should_skip("Quit")
+        self.assertFalse(skip)
         skip, reason = should_skip("quit")
         self.assertTrue(skip)
         self.assertEqual(reason, "lower-token")

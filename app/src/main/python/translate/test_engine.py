@@ -77,6 +77,26 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(res[0].translation, "ID:Español")
         self.assertEqual(len(p.calls), 1)
 
+    def test_language_region_suffix_never_hits_provider(self):
+        p = MockProvider()
+        res = translate_strings(
+            {"a": "English (US)", "b": "Español (México)"}, provider=p)
+        d = results_to_dict(res)
+        self.assertEqual(d["a"], "Inggris (US)")
+        self.assertEqual(d["b"], "Spanyol (México)")
+        self.assertEqual(p.calls, [])
+        for r in res:
+            self.assertEqual(r.detail, "glossary-language")
+
+    def test_language_codes_skipped_in_engine(self):
+        p = MockProvider()
+        res = translate_strings({"a": "EN", "b": "ES"}, provider=p)
+        for r in res:
+            self.assertEqual(r.status, "skipped")
+            self.assertEqual(r.detail, "language-code")
+            self.assertEqual(r.translation, r.source)
+        self.assertEqual(p.calls, [])
+
     def test_cache_hit(self):
         with tempfile.TemporaryDirectory() as d:
             cache = TranslationCache(os.path.join(d, "c.json"))
@@ -173,3 +193,36 @@ class TestAgnesProviderKeyHandling(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFixedMapIntegration(unittest.TestCase):
+    def test_fixed_terms_never_hit_provider(self):
+        # Day/month/UI terms must win WITHOUT calling the provider.
+        p = MockProvider()
+        res = translate_strings(
+            {"a": "Monday", "b": "Yes", "c": "January"}, provider=p)
+        d = results_to_dict(res)
+        self.assertEqual(d, {"a": "Senin", "b": "Ya", "c": "Januari"})
+        self.assertEqual(p.calls, [])
+        for r in res:
+            self.assertEqual(r.status, "translated")
+            self.assertEqual(r.detail, "fixed-map")
+
+    def test_fixed_wins_over_stale_cache(self):
+        # A cached mistranslation must never resurface for fixed terms.
+        with tempfile.TemporaryDirectory() as d:
+            cache = TranslationCache(os.path.join(d, "c.json"))
+            cache.put("Monday", "en", "id", "agnes", "WRONG")
+            p = MockProvider()
+            res = translate_strings(
+                {"a": "Monday"}, provider=p, cache=cache)
+            self.assertEqual(res[0].translation, "Senin")
+            self.assertEqual(res[0].detail, "fixed-map")
+            self.assertEqual(p.calls, [])
+
+    def test_fixed_only_for_matching_target(self):
+        p = MockProvider()
+        res = translate_strings(
+            {"a": "Monday"}, provider=p, target_lang="en")
+        self.assertEqual(res[0].translation, "ID:Monday")
+        self.assertEqual(len(p.calls), 1)

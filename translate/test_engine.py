@@ -77,6 +77,26 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(res[0].translation, "ID:Español")
         self.assertEqual(len(p.calls), 1)
 
+    def test_language_region_suffix_never_hits_provider(self):
+        p = MockProvider()
+        res = translate_strings(
+            {"a": "English (US)", "b": "Español (México)"}, provider=p)
+        d = results_to_dict(res)
+        self.assertEqual(d["a"], "Inggris (US)")
+        self.assertEqual(d["b"], "Spanyol (México)")
+        self.assertEqual(p.calls, [])
+        for r in res:
+            self.assertEqual(r.detail, "glossary-language")
+
+    def test_language_codes_skipped_in_engine(self):
+        p = MockProvider()
+        res = translate_strings({"a": "EN", "b": "ES"}, provider=p)
+        for r in res:
+            self.assertEqual(r.status, "skipped")
+            self.assertEqual(r.detail, "language-code")
+            self.assertEqual(r.translation, r.source)
+        self.assertEqual(p.calls, [])
+
     def test_cache_hit(self):
         with tempfile.TemporaryDirectory() as d:
             cache = TranslationCache(os.path.join(d, "c.json"))

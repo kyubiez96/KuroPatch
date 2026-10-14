@@ -207,6 +207,12 @@ LANGUAGE_NAMES_ID = {
 }
 
 
+# "Name (Region)" -- e.g. "English (US)", "Español (México)".
+# Locale pickers qualify a language with a region; the base name is
+# translated via the fixed map, the region is kept verbatim.
+_REGION_SUFFIX_RE = re.compile(r"^(.+?)\s*\(([^()]*)\)\s*$")
+
+
 class Glossary:
     def __init__(self, terms=None):
         self.terms = list(terms) if terms else list(DEFAULT_TERMS)
@@ -241,12 +247,25 @@ class Glossary:
         """Return the fixed Indonesian name if text is a language name.
 
         Whole-string match only (case-insensitive, whitespace-trimmed).
+        Also handles "Name (Region)" -- the base name is translated via
+        the fixed map and the region is kept verbatim, e.g.
+        "English (US)" -> "Inggris (US)".
         Returns None for anything else -- sentences, fragments, and
         unknown strings fall through to the provider. The caller must
         only apply this when the target language is Indonesian.
         """
         key = text.strip().lower()
-        return LANGUAGE_NAMES_ID.get(key)
+        hit = LANGUAGE_NAMES_ID.get(key)
+        if hit is not None:
+            return hit
+        m = _REGION_SUFFIX_RE.match(text.strip())
+        if m:
+            base, suffix = m.group(1).strip(), m.group(2).strip()
+            if base and suffix:
+                hit = LANGUAGE_NAMES_ID.get(base.lower())
+                if hit is not None:
+                    return f"{hit} ({suffix})"
+        return None
 
     def protect_hint(self, text):
         """Return text with a keep-verbatim note for the provider prompt."""
