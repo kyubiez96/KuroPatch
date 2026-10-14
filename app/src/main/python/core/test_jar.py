@@ -450,6 +450,20 @@ class TestPropertiesEdgeCases(unittest.TestCase):
                 self.assertEqual(
                     z.infolist()[0].compress_type, zipfile.ZIP_STORED)
 
+    def test_patch_jar_rejects_non_string_translation(self):
+        # Round-4 (Luna): passing collect's raw {value: [origins]}
+        # dict to patch_jar died deep in _match_translation with a
+        # raw TypeError (str + list). Must fail loud at the boundary.
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "in.jar")
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("a.properties", "x=Hello\n")
+            with self.assertRaises(ValueError) as ctx:
+                jar_mod.patch_jar(src, {"Hello": ["in.jar::x"]},
+                                  os.path.join(td, "out.jar"))
+            self.assertIn("not a string", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

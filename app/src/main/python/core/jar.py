@@ -217,6 +217,17 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
     translations = _coerce_str_dict(translations)
     if not translations:
         raise ValueError("translations must be a non-empty dict")
+    # Values MUST be strings. A caller passing collect's raw
+    # {value: [origins]} dict would otherwise die deep in
+    # _match_translation with a raw TypeError (str + list).
+    # Reject loudly at the boundary instead.
+    for key, value in translations.items():
+        if not isinstance(value, str):
+            raise ValueError(
+                f"translation for {key!r} is {type(value).__name__}, "
+                "not a string -- did you pass a `collect --out` file? "
+                "That file maps values to origin lists, not translations."
+            )
     tmp = workspace or tempfile.mkdtemp(prefix="kpatch-patch-")
     patcher = JarPatcher(jar_path, workspace=tmp)
     stats = {"properties": 0, "smali": 0, "classes": 0, "packs": 0}

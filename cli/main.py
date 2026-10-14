@@ -153,6 +153,11 @@ def build_parser():
                             help="auto-translate with the translate engine")
             sp.add_argument("--translations",
                             help="JSON file mapping source -> translation")
+        if name == "patch":
+            # patch always auto-translates; accept --auto (no-op) so
+            # `patch jar --auto` doesn't fail by analogy with translate.
+            sp.add_argument("--auto", action="store_true",
+                            help="auto-translate (implied for patch)")
         sp.set_defaults(func=fn)
     return p
 
