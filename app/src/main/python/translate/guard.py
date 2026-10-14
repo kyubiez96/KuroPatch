@@ -31,7 +31,12 @@ _DIMENSION_RE = re.compile(
 # placeholder -- otherwise a changed parameter would pass.
 _FORMAT_RE = re.compile(
     r"%[tT][HIklMSLNpzZsQBbhAaCYyjmdeRTrDFc]"  # Java date/time: %tY is ONE spec -- the suffix matters
-    r"|%(?:\d+\$)?[-#+ 0,(]*\d*(?:\.\d+)?[a-zA-Z%]"  # printf: flags/width/precision + any conversion
+    r"|%(?:\d+\$)?[-#+0,(]*\d*(?:\.\d+)?[a-zA-Z%]"  # printf: flags/width/precision + any conversion
+    # NOTE: the space flag is DELIBERATELY absent from the flags class:
+    # "% s" would match "% <word>" in natural text ("100% sure",
+    # "50% off"), making those common strings fail validation and
+    # stay untranslated. A genuine "% d" (space-flag spec) is far
+    # rarer in game strings than "N% word" text.
     r"|\\m..\\m|\\f..\\f"                   # Gameloft paired codes (\m12\m, \f34\f)
     r"|\\(?:[mfxnd]|p[1278]|v\d+)"          # Gameloft single codes (\p1, \v600, \x, \n, \d)
     r"|\\u[0-9a-fA-F]{4}"                   # \uXXXX escapes
