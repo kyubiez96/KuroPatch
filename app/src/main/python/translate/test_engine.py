@@ -209,6 +209,14 @@ class TestJavaMapBoundary(unittest.TestCase):
         self.assertEqual(res[0].status, "translated")
         self.assertEqual(res[0].translation, "ID:Hello")
 
+    def test_entry_set_is_not_iterable(self):
+        # Locks the double's fidelity: a real Chaquopy Set raises
+        # TypeError on `for`. If this ever stops raising, the double
+        # no longer reproduces the on-device crash and the regression
+        # test above would silently pass on broken code.
+        with self.assertRaises(TypeError):
+            list(FakeJavaMap({"k1": "Hello"}).entrySet())
+
 
 class TestAgnesProviderKeyHandling(unittest.TestCase):
     def test_missing_key_raises(self):

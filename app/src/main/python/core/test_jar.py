@@ -181,6 +181,12 @@ class TestJarPipeline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             jar = _make_fixture(tmp)
             out = os.path.join(tmp, "out.jar")
+            # Fidelity lock: a real Chaquopy Set raises TypeError on
+            # `for`. If this stops raising, the double no longer
+            # reproduces the on-device crash.
+            with self.assertRaises(TypeError):
+                list(FakeJavaMap(
+                    {"Start Game": "Mulai Game"}).entrySet())
             stats = jar_mod.patch_jar(
                 jar, FakeJavaMap({"Start Game": "Mulai Game"}), out)
             self.assertGreaterEqual(stats["properties"], 1)
