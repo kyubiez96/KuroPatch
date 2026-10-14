@@ -128,10 +128,42 @@ def _coerce_str_dict(mapping):
     return result
 
 
+def _report_progress(on_progress, done, total):
+    """Fire the on_progress callback (best-effort, never breaks translation).
+
+    Accepts a Python callable ``on_progress(done, total)`` or a Chaquopy
+    Java object with an ``onProgress(done, total)`` method. The direct
+    call is tried first; on TypeError/AttributeError the Java-style
+    method is tried. ALL exceptions are swallowed: a crashing progress
+    callback must never break translation.
+    """
+    if on_progress is None:
+        return
+    try:
+        on_progress(done, total)
+        return
+    except (TypeError, AttributeError):
+        pass
+    except Exception:
+        return
+    try:
+        on_progress.onProgress(done, total)
+    except Exception:
+        pass
+
+
 def translate_strings(strings, target_lang="id", source_lang="en",
                       provider=None, cache=None, glossary=None,
-                      max_retries=1):
+                      max_retries=1, on_progress=None):
     """Translate {key: source_text} -> list of TranslateResult.
+
+    ``on_progress`` (optional) is called after EVERY string is
+    processed -- guard-skipped, glossary/fixed-map, cache hit,
+    provider translated, provider failed -- with ``(done, total)``
+    where ``done`` counts 1..N and ``total`` is ``len(strings)``.
+    Progress is real per-string completion only: no timers, no
+    interpolation, no fake increments. A crashing callback never
+    breaks translation (see :func:`_report_progress`).
 
     Pipeline per string:
       1. guard.should_skip      -> status 'skipped' (kept verbatim)
@@ -148,6 +180,7 @@ def translate_strings(strings, target_lang="id", source_lang="en",
     if strings is None:
         return []
     strings = _coerce_str_dict(strings)
+    total = len(strings)
 
     results = []
     # Consecutive provider EXCEPTIONS (network down, API down, bad
@@ -173,6 +206,7 @@ def translate_strings(strings, target_lang="id", source_lang="en",
             # tags / number / empty -- a fixed-map match can never
             # override these (no fixed key is a URL or dimension).
             results.append(TranslateResult(key, text, text, "skipped", reason))
+            _report_progress(on_progress, len(results), total)
             continue
         # Curated lookups win over HEURISTIC guard rules (MED #2):
         # "monday" is a lower-token skip but a fixed-map hit (Senin);
@@ -186,6 +220,7 @@ def translate_strings(strings, target_lang="id", source_lang="en",
             if lang_name is not None:
                 results.append(TranslateResult(
                     key, text, lang_name, "translated", "glossary-language"))
+                _report_progress(on_progress, len(results), total)
                 continue
         # Other hallucination-prone bare strings (day/month names, bare UI
         # labels): same treatment -- fixed mapping wins over cache/provider.
@@ -193,13 +228,16 @@ def translate_strings(strings, target_lang="id", source_lang="en",
         if fixed is not None:
             results.append(TranslateResult(
                 key, text, fixed, "translated", "fixed-map"))
+            _report_progress(on_progress, len(results), total)
             continue
         if skip:
             # Heuristic skip with no curated match: keep it skipped.
             results.append(TranslateResult(key, text, text, "skipped", reason))
+            _report_progress(on_progress, len(results), total)
             continue
         if glossary.is_only_terms(text):
             results.append(TranslateResult(key, text, text, "skipped", "glossary"))
+            _report_progress(on_progress, len(results), total)
             continue
         if cache is not None:
             hit = cache.get(text, source_lang, target_lang, provider.name)
@@ -211,6 +249,7 @@ def translate_strings(strings, target_lang="id", source_lang="en",
                 # miss -- fall through and re-translate.
                 if validate(text, hit):
                     results.append(TranslateResult(key, text, hit, "cached", ""))
+                    _report_progress(on_progress, len(results), total)
                     continue
 
         # Keep-verbatim terms for the INSTRUCTION block (MED #5): the
@@ -242,6 +281,7 @@ def translate_strings(strings, target_lang="id", source_lang="en",
                 "provider errors")
             results.append(TranslateResult(
                 key, text, text, "failed", last_error))
+            _report_progress(on_progress, len(results), total)
             continue
         while attempt <= max_retries:
             try:
@@ -333,10 +373,12 @@ def translate_strings(strings, target_lang="id", source_lang="en",
         if translated is None:
             results.append(TranslateResult(
                 key, text, text, "failed", last_error or "validation failed"))
+            _report_progress(on_progress, len(results), total)
             continue
         if cache is not None:
             cache.put(text, source_lang, target_lang, provider.name, translated)
         results.append(TranslateResult(key, text, translated, "translated", ""))
+        _report_progress(on_progress, len(results), total)
 
     if cache is not None:
         cache.save()
