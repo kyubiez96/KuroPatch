@@ -409,12 +409,43 @@ class TestPropertiesEdgeCases(unittest.TestCase):
         # Round-3 audit: an entry named "" or "." made extract()
         # target the workspace directory itself (IsADirectoryError),
         # crashing collect/patch on a malformed jar.
+        # Fixture is built by hand: zipfile.writestr("") raises
+        # IndexError on Python 3.11 (it indexes filename[-1]) while
+        # passing on 3.12, so the test failed in CI but not locally.
+        # A hand-built STORED zip works on every Python.
+        import struct
+        import binascii
+
+        def _write_stored_zip(path, entries):
+            out = bytearray()
+            centrals = []
+            for name, data in entries:
+                nb = name.encode("utf-8")
+                crc = binascii.crc32(data) & 0xFFFFFFFF
+                off = len(out)
+                out += struct.pack(
+                    "<IHHHHHIIIHH", 0x04034B50, 20, 0, 0, 0, 0,
+                    crc, len(data), len(data), len(nb), 0)
+                out += nb + data
+                centrals.append(struct.pack(
+                    "<IHHHHHHIIIHHHHHII", 0x02014B50, 20, 20, 0, 0, 0, 0,
+                    crc, len(data), len(data), len(nb), 0, 0, 0, 0, 0, off) + nb)
+            cd_off = len(out)
+            cd = b"".join(centrals)
+            out += cd
+            out += struct.pack(
+                "<IHHHHIIH", 0x06054B50, 0, 0,
+                len(entries), len(entries), len(cd), cd_off, 0)
+            with open(path, "wb") as fh:
+                fh.write(out)
+
         with tempfile.TemporaryDirectory() as td:
             jar = os.path.join(td, "weird.jar")
-            with zipfile.ZipFile(jar, "w") as z:
-                z.writestr("", b"weird")
-                z.writestr(".", b"dot")
-                z.writestr("ok.properties", b"msg=Hello world\n")
+            _write_stored_zip(jar, [
+                ("", b"weird"),
+                (".", b"dot"),
+                ("ok.properties", b"msg=Hello world\n"),
+            ])
             res = jar_mod.collect_strings(jar)
             self.assertIn("Hello world", res["strings"])
 
