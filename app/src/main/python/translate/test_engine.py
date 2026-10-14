@@ -435,3 +435,85 @@ class TestTruncatedResponseRejected(unittest.TestCase):
         finally:
             urllib.request.urlopen = orig
             os.environ.pop("AGNES_API_KEY", None)
+
+
+class TestBatchAbortOnProviderDeath(unittest.TestCase):
+    def test_dead_provider_aborts_after_three_errors(self):
+        # Round-4 audit: a dead network used to mean one timeout PER
+        # string (97 strings = 97 timeouts). Three consecutive
+        # provider exceptions must abort the batch.
+        class CountingDeadProvider(BaseProvider):
+            name = "dead"
+
+            def __init__(self):
+                self.calls = 0
+
+            def translate(self, text, source_lang="en", target_lang="id"):
+                self.calls += 1
+                raise RuntimeError("network down")
+
+        p = CountingDeadProvider()
+        strings = {f"k{i}": f"String number {i}" for i in range(5)}
+        res = translate_strings(strings, provider=p)
+        self.assertEqual(p.calls, 3)
+        self.assertEqual(len(res), 5)
+        for r in res:
+            self.assertEqual(r.status, "failed", r.key)
+            self.assertEqual(r.translation, r.source)
+        self.assertIn("aborted", res[4].detail)
+
+    def test_validation_failures_do_not_abort(self):
+        # Validation failures are per-string issues (bad translation),
+        # NOT infrastructure failure -- they must never trigger the
+        # abort. All 5 strings must be attempted. (The provider strips
+        # placeholders from whatever it receives, including the retry
+        # prompt -- a naive echo mock would pass validation spuriously
+        # because the retry prompt embeds the source text.)
+        import re
+
+        class StripProvider(BaseProvider):
+            name = "strip"
+
+            def __init__(self):
+                self.calls = []
+
+            def translate(self, text, source_lang="en", target_lang="id"):
+                self.calls.append(text)
+                return re.sub(r"%[a-zA-Z%]", "", text)
+
+        p = StripProvider()
+        strings = {f"k{i}": t for i, t in enumerate([
+            "Alpha %d one", "Beta %d two", "Gamma %d three",
+            "Delta %d four", "Epsilon %d five"])}
+        res = translate_strings(strings, provider=p)
+        # 2 attempts x 5 strings (retry included): every string was
+        # attempted, none short-circuited by the abort.
+        self.assertEqual(len(p.calls), 10)
+        for r in res:
+            self.assertEqual(r.status, "failed", r.key)
+
+    def test_glossary_and_skip_survive_provider_death(self):
+        # The abort only skips PROVIDER CALLS: glossary / fixed-map /
+        # skip paths must still be served after the provider dies.
+        class CountingDeadProvider(BaseProvider):
+            name = "dead"
+
+            def __init__(self):
+                self.calls = 0
+
+            def translate(self, text, source_lang="en", target_lang="id"):
+                self.calls += 1
+                raise RuntimeError("network down")
+
+        p = CountingDeadProvider()
+        strings = {
+            "a": "Alpha one", "b": "Beta two", "c": "Gamma three",
+            "lang": "Español",  # glossary hit, needs no provider
+            "dim": "1080x1920",  # skip, needs no provider
+        }
+        res = translate_strings(strings, provider=p)
+        d = {r.key: r for r in res}
+        self.assertEqual(p.calls, 3)
+        self.assertEqual(d["lang"].status, "translated")
+        self.assertEqual(d["lang"].translation, "Spanyol")
+        self.assertEqual(d["dim"].status, "skipped")

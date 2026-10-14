@@ -340,6 +340,20 @@ class TestPropertiesEdgeCases(unittest.TestCase):
                 entry.value = "new"
         self.assertEqual(pf.to_bytes(), b"key=new\rkey2=v2\r")
 
+    def test_escaped_non_ascii_key_in_ascii_file(self):
+        # Luna audit: an ASCII file whose key carries a \uXXXX escape
+        # for a non-ASCII char ("caf\u00e9") parses to key "café".
+        # The old render() escaped the key for utf-8 (raw "café")
+        # and to_bytes() then crashed on the strict ASCII encode.
+        from core.patcher import PropertiesFile
+        pf = PropertiesFile.loads(b"caf\\u00e9=old\n")
+        self.assertEqual(pf.entries[0].key, "café")
+        self.assertEqual(pf.write_charset, "ascii")
+        for entry in pf.entries:
+            if entry.key == "café":
+                entry.value = "new"
+        self.assertEqual(pf.to_bytes(), b"caf\\u00e9=new\n")
+
     def test_escape_value_astral_surrogate_pair(self):
         # Haiku audit: emoji -> \u1f600 (FIVE hex digits), which Java
         # reads as \u1f60 + literal "0". Must be a surrogate pair.
@@ -449,6 +463,91 @@ class TestPropertiesEdgeCases(unittest.TestCase):
             with zipfile.ZipFile(out) as z:
                 self.assertEqual(
                     z.infolist()[0].compress_type, zipfile.ZIP_STORED)
+
+    def test_rebuild_removes_stale_tmp(self):
+        # Round-3 (Haiku): a previous run killed mid-rebuild leaves
+        # out.jar.tmp behind. Rebuild must clean it up, not let .tmp
+        # files pile up in the output dir.
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "in.jar")
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("plain.txt", "hello")
+            out = os.path.join(td, "out.jar")
+            with open(out + ".tmp", "wb") as fh:
+                fh.write(b"junk from a killed run")
+            p = JarPatcher(src, workspace=os.path.join(td, "ws"))
+            try:
+                p.extract()
+                p.rebuild(out)
+            finally:
+                p.close()
+            self.assertFalse(os.path.exists(out + ".tmp"))
+            with zipfile.ZipFile(out) as z:
+                self.assertIsNone(z.testzip())
+
+    def test_rebuild_tmp_path_not_spliced_as_entry(self):
+        # Round-3 (Haiku): the rebuild tmp file lives next to the
+        # output. If the archive contains an entry whose workspace
+        # path IS that tmp file, the half-written tmp must never be
+        # read back as entry data -- the entry must come from the
+        # source archive. (Guards the tmp skip-set line; the
+        # pre-audit code had no tmp file at all.)
+        with tempfile.TemporaryDirectory() as td:
+            ws = os.path.join(td, "ws")
+            src = os.path.join(td, "in.jar")
+            out = os.path.join(ws, "out.jar")  # output inside workspace
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("out.jar.tmp", "ORIGINAL")
+                z.writestr("plain.txt", "hello")
+            p = JarPatcher(src, workspace=ws)
+            try:
+                p.extract()
+                p.rebuild(out)
+                # Read BEFORE close(): close() wipes the workspace,
+                # and the output lives inside it here.
+                with zipfile.ZipFile(out) as z:
+                    got = z.read("out.jar.tmp")
+            finally:
+                p.close()
+            self.assertEqual(got, b"ORIGINAL")
+
+    def test_pack_stats_not_counted_on_failed_build(self):
+        # Luna audit: patch_jar incremented stats["packs"] BEFORE
+        # build_resource succeeded -- a failed build left the file
+        # untouched but the stats claimed replacements that never
+        # landed. Here the translation overflows the pack's 1-byte
+        # offset width (strdata > 255), so the build must fail and
+        # stats["packs"] must stay 0.
+        from core.stringpacks import StringPack, build_resource
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "in.jar")
+            resource = build_resource(
+                [StringPack(es=1, strings=["Hello", "World"])])
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("RES_STRINGS", resource)
+            out = os.path.join(td, "out.jar")
+            stats = jar_mod.patch_jar(src, {"Hello": "X" * 300}, out)
+            self.assertEqual(stats["packs"], 0)
+            with zipfile.ZipFile(out) as z:
+                self.assertEqual(z.read("RES_STRINGS"), resource)
+
+    def test_lzma_decompression_cap(self):
+        # Luna audit: parse_resource decompressed with no cap -- a
+        # crafted resource could OOM the process (decompression bomb).
+        from core import stringpacks
+        from core.stringpacks import (
+            StringPack, build_resource, parse_resource)
+        raw = build_resource([StringPack(es=1, strings=["Hello"])])
+        blob = raw  # build_resource already returns LZMA-compressed bytes
+        old_cap = stringpacks._MAX_DECOMPRESSED
+        try:
+            stringpacks._MAX_DECOMPRESSED = 4  # smaller than the pack
+            with self.assertRaises(ValueError):
+                parse_resource(blob)
+        finally:
+            stringpacks._MAX_DECOMPRESSED = old_cap
+        # The real cap still accepts the small valid pack.
+        self.assertEqual(parse_resource(blob)[0].strings, ["Hello"])
 
     def test_patch_jar_rejects_non_string_translation(self):
         # Round-4 (Luna): passing collect's raw {value: [origins]}

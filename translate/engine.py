@@ -15,6 +15,11 @@ except ImportError:  # standalone script usage
     from validator import validate
 
 
+# Consecutive provider exceptions (network/API down) that abort a
+# batch instead of timing out once per string.
+_MAX_CONSECUTIVE_PROVIDER_ERRORS = 3
+
+
 class TranslateResult:
     """Outcome for one input string."""
 
@@ -89,6 +94,16 @@ def translate_strings(strings, target_lang="id", source_lang="en",
     strings = _coerce_str_dict(strings)
 
     results = []
+    # Consecutive provider EXCEPTIONS (network down, API down, bad
+    # key) abort the batch: without this, a dead network means one
+    # timeout per string (a 97-string jar = 97 timeouts). Only
+    # exceptions count -- validation failures are per-string issues
+    # and never trigger the abort; any successful provider call
+    # (even one that then fails validation) resets the counter.
+    # The abort only skips PROVIDER CALLS: skipped / glossary /
+    # fixed-map / cache hits are still served normally.
+    consecutive_provider_errors = 0
+    provider_dead = False
     for key, text in strings.items():
         skip, reason = guard_mod.should_skip(text)
         if skip:
@@ -128,12 +143,30 @@ def translate_strings(strings, target_lang="id", source_lang="en",
         attempt = 0
         translated = None
         last_error = ""
+        if provider_dead:
+            # Provider already proven dead this batch: don't call it
+            # again, just mark this string failed. (Skipped /
+            # glossary / fixed-map / cache hits above already returned.)
+            last_error = (
+                "provider unavailable -- batch aborted after "
+                f"{_MAX_CONSECUTIVE_PROVIDER_ERRORS} consecutive "
+                "provider errors")
+            results.append(TranslateResult(
+                key, text, text, "failed", last_error))
+            continue
         while attempt <= max_retries:
             try:
                 translated = provider.translate(
                     prompt_text, source_lang, target_lang)
+                # Provider answered (even if validation then rejects
+                # it): the infrastructure is up, reset the streak.
+                consecutive_provider_errors = 0
             except Exception as exc:  # provider blew up: fail safe
                 last_error = str(exc)
+                consecutive_provider_errors += 1
+                if (consecutive_provider_errors
+                        >= _MAX_CONSECUTIVE_PROVIDER_ERRORS):
+                    provider_dead = True
                 break
             check = validate(text, translated)
             if check:
