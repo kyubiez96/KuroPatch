@@ -55,6 +55,28 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(res[0].status, "skipped")
         self.assertEqual(res[0].detail, "glossary")
 
+    def test_language_names_never_hit_provider(self):
+        # Live bug: Agnes mistranslated Español->Jerman, English->Ingris.
+        # Glossary mapping must win WITHOUT calling the provider.
+        p = MockProvider()
+        res = translate_strings(
+            {"a": "Español", "b": "English", "c": "Deutsch"}, provider=p)
+        d = results_to_dict(res)
+        self.assertEqual(d["a"], "Spanyol")
+        self.assertEqual(d["b"], "Inggris")
+        self.assertEqual(d["c"], "Jerman")
+        self.assertEqual(p.calls, [])  # provider never called
+        for r in res:
+            self.assertEqual(r.status, "translated")
+            self.assertEqual(r.detail, "glossary-language")
+
+    def test_language_names_only_for_indonesian_target(self):
+        # Mapping is Indonesian-only; other targets fall through.
+        p = MockProvider()
+        res = translate_strings({"a": "Español"}, provider=p, target_lang="en")
+        self.assertEqual(res[0].translation, "ID:Español")
+        self.assertEqual(len(p.calls), 1)
+
     def test_cache_hit(self):
         with tempfile.TemporaryDirectory() as d:
             cache = TranslationCache(os.path.join(d, "c.json"))

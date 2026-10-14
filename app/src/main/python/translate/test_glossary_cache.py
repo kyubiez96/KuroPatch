@@ -32,6 +32,38 @@ class TestGlossary(unittest.TestCase):
         self.assertEqual(g.protect_hint("Hello world"), "Hello world")
 
 
+class TestLanguageNames(unittest.TestCase):
+    def test_live_bug_cases(self):
+        g = Glossary()
+        # Live Agnes mistranslations, 2026-10-14: Español->Jerman (wrong),
+        # English->Ingris (typo). These must never reach the provider.
+        self.assertEqual(g.lookup_language("Español"), "Spanyol")
+        self.assertEqual(g.lookup_language("English"), "Inggris")
+        self.assertEqual(g.lookup_language("Deutsch"), "Jerman")
+
+    def test_case_and_whitespace_insensitive(self):
+        g = Glossary()
+        self.assertEqual(g.lookup_language("ENGLISH"), "Inggris")
+        self.assertEqual(g.lookup_language("  español  "), "Spanyol")
+        self.assertEqual(g.lookup_language("Français"), "Prancis")
+
+    def test_native_and_english_names(self):
+        g = Glossary()
+        self.assertEqual(g.lookup_language("日本語"), "Jepang")
+        self.assertEqual(g.lookup_language("Japanese"), "Jepang")
+        self.assertEqual(g.lookup_language("中文"), "Mandarin")
+        self.assertEqual(g.lookup_language("Русский"), "Rusia")
+        self.assertEqual(g.lookup_language("한국어"), "Korea")
+
+    def test_no_partial_matches(self):
+        g = Glossary()
+        # Sentences/fragments must fall through to the provider.
+        self.assertIsNone(g.lookup_language("English version"))
+        self.assertIsNone(g.lookup_language("Hello"))
+        self.assertIsNone(g.lookup_language(""))
+        self.assertIsNone(g.lookup_language("Inggris"))
+
+
 class TestCache(unittest.TestCase):
     def test_put_get(self):
         with tempfile.TemporaryDirectory() as d:

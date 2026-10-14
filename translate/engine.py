@@ -4,13 +4,13 @@ provider and validation for a batch of game strings.
 try:
     from . import guard as guard_mod
     from .cache import TranslationCache
-    from .glossary import Glossary
+    from .glossary import Glossary, lookup_fixed
     from .providers import PassthroughProvider
     from .validator import validate
 except ImportError:  # standalone script usage
     import guard as guard_mod
     from cache import TranslationCache
-    from glossary import Glossary
+    from glossary import Glossary, lookup_fixed
     from providers import PassthroughProvider
     from validator import validate
 
@@ -57,8 +57,10 @@ def translate_strings(strings, target_lang="id", source_lang="en",
     Pipeline per string:
       1. guard.should_skip      -> status 'skipped' (kept verbatim)
       2. glossary.is_only_terms -> status 'skipped'
-      3. cache hit              -> status 'cached'
-      4. provider.translate     -> validate placeholders
+      3. glossary.lookup_language (target id only) -> fixed mapping,
+         provider NEVER called (language names are never LLM-guessed)
+      4. cache hit              -> status 'cached'
+      5. provider.translate     -> validate placeholders
          - on validation failure: retry once with a stricter prompt,
            then mark 'failed' (source kept, never ship broken output)
     """
@@ -75,6 +77,14 @@ def translate_strings(strings, target_lang="id", source_lang="en",
         if glossary.is_only_terms(text):
             results.append(TranslateResult(key, text, text, "skipped", "glossary"))
             continue
+        # Language names: fixed mapping, never LLM-guessed (and never
+        # shadowed by a stale/wrong cache entry). Indonesian target only.
+        if target_lang == "id":
+            lang_name = glossary.lookup_language(text)
+            if lang_name is not None:
+                results.append(TranslateResult(
+                    key, text, lang_name, "translated", "glossary-language"))
+                continue
         if cache is not None:
             hit = cache.get(text, source_lang, target_lang, provider.name)
             if hit is not None:
