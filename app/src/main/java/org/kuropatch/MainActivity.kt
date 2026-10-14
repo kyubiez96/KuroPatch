@@ -247,6 +247,8 @@ class MainActivity : AppCompatActivity() {
         translatedStrings = emptyMap()
         translatedLangCode = ""
         binding.btnPatch.isEnabled = false
+        // Fast operation: keep the bar indeterminate.
+        binding.progressBar.isIndeterminate = true
         setBusy(true, "Extracting strings…")
         thread {
             try {
@@ -302,6 +304,11 @@ class MainActivity : AppCompatActivity() {
             promptAgnesKey()
             return
         }
+        // Determinate progress for translate: the bar shows REAL
+        // per-string % (engine on_progress callback), not the
+        // indeterminate animation -- which showed fake movement.
+        binding.progressBar.isIndeterminate = false
+        binding.progressBar.progress = 0
         setBusy(true, "Translating…")
         exportAgnesKey()
         thread {
@@ -314,8 +321,29 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     providers.get("PassthroughProvider")!!.callAttr("__call__")
                 }
+                // Determinate progress: a plain object with a PUBLIC
+                // onProgress(done, total). Python tries a direct call
+                // first, then .onProgress(done, total). Invoked on
+                // this background thread: NEVER touch views here --
+                // post via safeUi (activity may be destroyed).
+                // Percentage is REAL per-string completion only.
+                val progressCallback = object {
+                    fun onProgress(done: Int, total: Int) {
+                        safeUi {
+                            if (total > 0) {
+                                binding.progressBar.progress =
+                                    (done * 100 / total).coerceIn(0, 100)
+                            }
+                        }
+                    }
+                }
+                // Positional args through on_progress: strings,
+                // target_lang, source_lang, provider, cache=None,
+                // glossary=None, max_retries=1, on_progress=callback.
+                // All other args identical to the previous call.
                 val results = engine.callAttr("translate_strings",
-                    toPyDict(py, extractedStrings), langCode(), "en", provider)
+                    toPyDict(py, extractedStrings), langCode(), "en", provider,
+                    null, null, 1, progressCallback)
                 val done = engine.callAttr("results_to_dict", results)
                 val translated: Map<String, String> = done.asMap()
                     .map { it.key.toString() to it.value.toString() }.toMap()
@@ -422,6 +450,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun patchJar() {
         if (translatedStrings.isEmpty()) return
+        // Fast operation: keep the bar indeterminate.
+        binding.progressBar.isIndeterminate = true
         setBusy(true, "Patching .jar…")
         thread {
             try {

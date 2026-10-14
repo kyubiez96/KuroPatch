@@ -188,7 +188,9 @@
             android:id="@+id/progressBar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:indeterminate="true"
+            android:indeterminate="false"
+            android:max="100"
+            android:progress="0"
             android:visibility="gone"
             android:layout_marginBottom="12dp" />
 
