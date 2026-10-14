@@ -10,6 +10,7 @@ import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
@@ -37,6 +38,44 @@ class MainActivity : AppCompatActivity() {
     private var jarUri: Uri? = null
     private var jarName: String = ""
     private var extractedStrings: Map<String, String> = emptyMap()
+    /** Last patched .jar. Lives in app-specific external files (NOT
+     * cacheDir) so it survives cache clears and app kills; the user
+     * exports it via Save / Share. Restored on launch (see
+     * restoreLastOutput) so a process death never orphans it. */
+    private var patchedJar: File? = null
+
+    /**
+     * System save dialog (SAF CreateDocument). The user picks where the
+     * patched .jar goes (Downloads, Documents, ...). Works under
+     * Android 14+ scoped storage, no permissions needed.
+     * Cancel = early return: the file stays in the output dir and
+     * Save stays enabled, so the user can retry any time.
+     */
+    private val savePatched = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/java-archive")
+    ) { uri ->
+        val src = patchedJar
+        if (uri == null || src == null || !src.exists()) {
+            if (uri != null) showError("Save failed", "Patched .jar is gone — patch again.")
+            return@registerForActivityResult
+        }
+        thread {
+            try {
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    src.inputStream().use { it.copyTo(out) }
+                } ?: throw IllegalStateException("cannot open output stream")
+                runOnUiThread {
+                    binding.tvStatus.text =
+                        "Saved: ${src.name} (${src.length() / 1024} KB)"
+                    Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    showError("Save failed", e.message ?: "unknown error")
+                }
+            }
+        }
+    }
 
     private val pickJar = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -68,6 +107,9 @@ class MainActivity : AppCompatActivity() {
         binding.btnExtract.setOnClickListener { extractStrings() }
         binding.btnTranslate.setOnClickListener { translateStrings() }
         binding.btnPatch.setOnClickListener { patchJar() }
+        binding.btnSave.setOnClickListener { launchSaveDialog() }
+        binding.btnShare.setOnClickListener { shareOutput() }
+        restoreLastOutput()
     }
 
     private fun initPython() {
@@ -224,7 +266,12 @@ class MainActivity : AppCompatActivity() {
             try {
                 val py = Python.getInstance()
                 val jarMod = py.getModule("core.jar")
-                val outDir = File(cacheDir, "output").apply { mkdirs() }
+                // App-specific external files, NOT cacheDir: survives
+                // "Clear cache" and OS cache eviction, no permission
+                // needed, and matches the FileProvider paths so Share
+                // can serve it. Same deterministic name every run, so
+                // re-patching cleanly overwrites the previous output.
+                val outDir = outputDir()
                 val jarFile = File(File(cacheDir, "extract"), jarName)
                 val outJar = File(outDir,
                     jarName.replace(".jar", "_${langCode()}.jar", ignoreCase = true))
@@ -233,9 +280,15 @@ class MainActivity : AppCompatActivity() {
                     outJar.absolutePath)
                 runOnUiThread {
                     setBusy(false)
-                    binding.tvStatus.text = "Done: ${outJar.name}"
-                    Toast.makeText(this, "Patched .jar ready",
-                        Toast.LENGTH_LONG).show()
+                    patchedJar = outJar
+                    binding.tvStatus.text =
+                        "Done: ${outJar.name} (${outJar.length() / 1024} KB) — pick where to save it"
+                    binding.btnSave.isEnabled = true
+                    binding.btnShare.isEnabled = true
+                    // Open the save dialog right away: this IS the
+                    // deliverable. Guarded: the activity may have been
+                    // backgrounded/destroyed while patching ran.
+                    if (!isFinishing && !isDestroyed) launchSaveDialog()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -243,6 +296,65 @@ class MainActivity : AppCompatActivity() {
                     showError("Patch failed", e.message ?: "unknown error")
                 }
             }
+        }
+    }
+
+    /** Open the system save dialog for the last patched .jar. */
+    private fun launchSaveDialog() {
+        val src = patchedJar
+        if (src == null || !src.exists()) {
+            showError("Nothing to save", "Patch a .jar first.")
+            return
+        }
+        savePatched.launch(src.name)
+    }
+
+    /** App-specific external output dir (v1 pattern). Falls back to
+     * internal files if external storage is unavailable. */
+    private fun outputDir(): File =
+        (getExternalFilesDir(null) ?: filesDir).resolve("KuroPatch")
+            .apply { mkdirs() }
+
+    /**
+     * Process-death recovery: if the app was killed after a patch
+     * (user switched to Files, OS reclaimed memory), the output file
+     * still sits in the output dir. Restore the newest one so Save /
+     * Share keep working without forcing a re-patch (re-translate).
+     */
+    private fun restoreLastOutput() {
+        val dir = (getExternalFilesDir(null) ?: filesDir).resolve("KuroPatch")
+        val newest = dir.listFiles { f ->
+            f.isFile && f.name.endsWith(".jar", ignoreCase = true)
+        }?.maxByOrNull { it.lastModified() }
+        if (newest != null) {
+            patchedJar = newest
+            binding.tvStatus.text =
+                "Last output: ${newest.name} (${newest.length() / 1024} KB)"
+            binding.btnSave.isEnabled = true
+            binding.btnShare.isEnabled = true
+        }
+    }
+
+    /** Share the last patched .jar via FileProvider (streamed — an
+     * 88 MB jar is never loaded into memory). Cancel / no handler =
+     * nothing happens; the file stays put. */
+    private fun shareOutput() {
+        val file = patchedJar
+        if (file == null || !file.isFile) {
+            showError("Nothing to share", "Patch a .jar first.")
+            return
+        }
+        try {
+            val uri = FileProvider.getUriForFile(
+                this, "${packageName}.fileprovider", file)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/java-archive"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Share patched .jar"))
+        } catch (e: Exception) {
+            showError("Share failed", e.message ?: "unknown error")
         }
     }
 
@@ -282,6 +394,9 @@ class MainActivity : AppCompatActivity() {
         binding.btnExtract.isEnabled = !busy && jarUri != null
         binding.btnTranslate.isEnabled = !busy && extractedStrings.isNotEmpty()
         binding.btnPatch.isEnabled = !busy && translatedStrings.isNotEmpty()
+        val hasOutput = patchedJar?.exists() == true
+        binding.btnSave.isEnabled = !busy && hasOutput
+        binding.btnShare.isEnabled = !busy && hasOutput
     }
 
     private fun showError(title: String, msg: String) {

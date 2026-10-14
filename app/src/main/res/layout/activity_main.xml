@@ -145,6 +145,28 @@
             android:enabled="false"
             app:cornerRadius="14dp"
             app:backgroundTint="#2EE06F"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Save patched .jar (system save dialog) -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSave"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Save patched .jar"
+            android:enabled="false"
+            app:cornerRadius="14dp"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Share patched .jar (FileProvider) -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnShare"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Share"
+            android:enabled="false"
+            app:cornerRadius="14dp"
+            style="@style/Widget.Material3.Button.OutlinedButton"
             android:layout_marginBottom="16dp" />
 
         <!-- Progress -->
