@@ -7,12 +7,19 @@ requires a real JVM and cannot run on Android -- the Android app refuses
 Pipeline:
   1. :func:`collect_strings` -- unzip a jar, gather every translatable
      value: ``.properties`` values, smali ``const-string`` literals,
-     ``.class`` constant-pool strings, Gameloft string packs.
+     ``.class`` constant-pool strings, Gameloft string packs, and the
+     English Gameloft ``TRAD_english.loc`` string table (in-game
+     story/dialog text -- the only .loc source; the other five
+     localizations and ``TRAD.lang`` are never collected).
      Returns ``{value: [origins]}`` (deduped: each distinct string once).
   2. :func:`patch_jar` -- apply a ``{source_value: translation}`` mapping
-     back into all four sources and repack, preserving entry order,
+     back into all five sources and repack, preserving entry order,
      compression, timestamps and MANIFEST.MF (stale .SF/.RSA signatures
-     are stripped by :class:`JarPatcher`).
+     are stripped by :class:`JarPatcher`). The ``.loc`` table is
+     replaced in place (player picks "English", gets the translation);
+     a translation that fails ``.loc`` validation reverts to the source
+     string for that record only -- one bad string never nukes the
+     other 399.
 
 Collection uses only cheap safety filters (empty / too-short /
 no-letters / technical-token). The full skip heuristics (screen dims,
@@ -26,6 +33,12 @@ import re
 import tempfile
 import shutil
 
+from .loc import (
+    DO_NOT_TRANSLATE as LOC_DO_NOT_TRANSLATE,
+    build as build_loc,
+    parse as parse_loc,
+    validate as validate_loc,
+)
 from .patcher import (
     JarPatcher,
     iter_class_strings,
@@ -213,6 +226,13 @@ def _data_key_strings(workspace, candidates):
                 continue
             if is_string_pack_entry(rel):
                 continue
+            # .loc tables are translation TARGETS, not key material:
+            # every .loc record is its own maximal printable run, so
+            # scanning them would drop every .loc string as a "key".
+            # TRAD.lang is the language lookup index itself (its names
+            # are already blocked by _is_language_name).
+            if rel.lower() == "trad.lang" or rel.lower().endswith(".loc"):
+                continue
             try:
                 with open(ws_path, "rb") as fh:
                     raw = fh.read()
@@ -279,13 +299,15 @@ def collect_strings(jar_path, minimum=3, translate_all=False, workspace=None):
     """Collect translatable strings from a .jar.
 
     Returns ``{"strings": {value: [origins]}, "total_seen": n,
-    "files": {"properties": n, "smali": n, "classes": n, "packs": n}}``.
+    "files": {"properties": n, "smali": n, "classes": n, "packs": n,
+    "loc": n}}``.
     """
     tmp = workspace or tempfile.mkdtemp(prefix="kpatch-collect-")
     patcher = JarPatcher(jar_path, workspace=tmp)
     strings = {}
     total_seen = 0
-    counts = {"properties": 0, "smali": 0, "classes": 0, "packs": 0}
+    counts = {"properties": 0, "smali": 0, "classes": 0, "packs": 0,
+              "loc": 0}
 
     def _add(value, origin):
         nonlocal total_seen
@@ -350,6 +372,31 @@ def collect_strings(jar_path, minimum=3, translate_all=False, workspace=None):
                 for pi, pack in enumerate(packs):
                     for si, value in enumerate(pack.strings):
                         _add(value, f"{rel}::pack{pi}#{si}")
+        # .loc: Gameloft in-game string tables. ONLY the English table
+        # is a translation source (translate FROM English -- the
+        # player picks "English" and gets the translation). The other
+        # five localizations are left untouched, and TRAD.lang (the
+        # language lookup index) is never collected: its names are
+        # logic keys, and translating them bricks language selection.
+        # Do-not-translate records are skipped by INDEX (records are
+        # addressed by index; content-based skipping would wrongly
+        # drop a translatable duplicate of a pinned string).
+        for root, _dirs, files in os.walk(patcher.workspace):
+            for filename in files:
+                ws_path = os.path.join(root, filename)
+                rel = os.path.relpath(ws_path, patcher.workspace).replace(os.sep, "/")
+                if rel.lower() != "trad_english.loc":
+                    continue
+                try:
+                    with open(ws_path, "rb") as fh:
+                        records = parse_loc(fh.read())
+                except (OSError, ValueError):
+                    continue
+                counts["loc"] += 1
+                for i, value in enumerate(records):
+                    if i in LOC_DO_NOT_TRANSLATE:
+                        continue
+                    _add(value, f"{rel}::loc#{i}")
         # Drop data-key strings: candidates stored as separate entries
         # in non-code resources are lookup keys, not UI text.
         dropped_keys = 0
@@ -437,9 +484,12 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
     """Apply {source_value: translation} to a .jar and repack.
 
     Translations are matched by decoded source value across .properties,
-    smali literals, .class constant pools and string packs. Returns a
-    stats dict: {"properties": n, "smali": n, "classes": n, "packs": n,
-    "out": out_path}.
+    smali literals, .class constant pools, string packs and the English
+    .loc table. Returns a stats dict: {"properties": n, "smali": n,
+    "classes": n, "packs": n, "loc": n, "loc_reverted": n, "out": out_path}.
+    "loc_reverted" counts .loc records whose translation failed
+    .loc validation and was reverted to the source string (fail-closed,
+    per record).
     """
     translations = _coerce_str_dict(translations)
     if not translations:
@@ -464,7 +514,8 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
                     if not _is_language_name(k)}
     tmp = workspace or tempfile.mkdtemp(prefix="kpatch-patch-")
     patcher = JarPatcher(jar_path, workspace=tmp)
-    stats = {"properties": 0, "smali": 0, "classes": 0, "packs": 0}
+    stats = {"properties": 0, "smali": 0, "classes": 0, "packs": 0,
+             "loc": 0, "loc_reverted": 0}
     try:
         patcher.extract()
         for path in patcher.get_properties_files():
@@ -539,6 +590,68 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
                     stats["packs"] += replaced_here
                     with open(ws_path, "wb") as fh:
                         fh.write(rebuilt)
+        # .loc: in-place replacement of the English string table.
+        # The player picks "English" in-game and gets the translated
+        # text. TRAD.lang / DOSMidlet.b / l.class are never touched
+        # (a 7th language slot needs bytecode surgery -- out of scope).
+        for root, _dirs, files in os.walk(patcher.workspace):
+            for filename in files:
+                ws_path = os.path.join(root, filename)
+                rel = os.path.relpath(ws_path, patcher.workspace).replace(os.sep, "/")
+                if rel.lower() != "trad_english.loc":
+                    continue
+                try:
+                    with open(ws_path, "rb") as fh:
+                        original = parse_loc(fh.read())
+                except (OSError, ValueError):
+                    continue
+                new_records = list(original)
+                changed = []
+                for i, record in enumerate(original):
+                    if i in LOC_DO_NOT_TRANSLATE:
+                        continue
+                    new = _match_translation(record, translations)
+                    if new is not None:
+                        new_records[i] = new
+                        changed.append(i)
+                if not changed:
+                    continue
+                try:
+                    validate_loc(new_records, original)
+                except ValueError:
+                    # Fail closed PER RECORD: a single bad string
+                    # (dropped $N, reflowed \n, non-ASCII, overlong
+                    # line) must not nuke the other 399. Every check
+                    # in validate_loc is per-record, so testing each
+                    # changed record alone isolates exactly the
+                    # violators -- revert only those, then re-check
+                    # the repaired table.
+                    for i in changed:
+                        trial = list(original)
+                        trial[i] = new_records[i]
+                        try:
+                            validate_loc(trial, original)
+                        except ValueError:
+                            new_records[i] = original[i]
+                    try:
+                        validate_loc(new_records, original)
+                    except ValueError as exc:
+                        # Still invalid (should not happen: every
+                        # check is per-record) -- keep the original
+                        # table rather than ship a failing one.
+                        stats["loc_error"] = str(exc)
+                        continue
+                try:
+                    rebuilt = build_loc(new_records)
+                except ValueError as exc:
+                    stats["loc_error"] = str(exc)
+                    continue
+                with open(ws_path, "wb") as fh:
+                    fh.write(rebuilt)
+                stats["loc"] += sum(
+                    1 for i in changed if new_records[i] != original[i])
+                stats["loc_reverted"] += sum(
+                    1 for i in changed if new_records[i] == original[i])
         out = patcher.rebuild(out_path)
         stats["out"] = out
         return stats

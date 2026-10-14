@@ -39,6 +39,13 @@ _FORMAT_RE = re.compile(
     # rarer in game strings than "N% word" text.
     r"|\\m..\\m|\\f..\\f"                   # Gameloft paired codes (\m12\m, \f34\f)
     r"|\\(?:[mfxnd]|p[1278]|v\d+)"          # Gameloft single codes (\p1, \v600, \x, \n, \d)
+    # NOTE: $N style codes (Gameloft .loc text renderer: $0 heading,
+    # $1/$2/$3 indents) are placeholders too -- a translation that
+    # drops one ships broken styling at best, a renderer mis-parse
+    # at worst. The validator compares them ordered, like %d.
+    # A literal "$5" in other strings is now also protected: keeping
+    # it verbatim is fail-safe (a dropped "$5" previously PASSED).
+    r"|\$[0-9]"                             # $N style codes ($0, $1, $2, ...)
     r"|\\u[0-9a-fA-F]{4}"                   # \uXXXX escapes
     r"|\\[nrtfb\\\\]"                       # \n \r \t \f \b \\ escapes
     # NOTE: Gameloft's lone "]" (line-break marker) is DELIBERATELY
@@ -185,7 +192,13 @@ def should_skip(text):
     # v1 heuristics (restored for the .jar flow: .properties values are
     # full of identifiers and bare tokens that must never reach a provider).
     if " " not in s:
-        if _IDENT_CHARS_RE.search(s) and not _SLASH_LABEL_RE.match(s):
+        # Trailing dots are ellipsis punctuation ("Wait...", "Celia..."),
+        # NOT identifier separators ("com.game.Main") -- strip them
+        # before the identifier check, or every dialog fragment ending
+        # in "..." is skipped and stays untranslated (proven on .loc
+        # fragments). Keys keep their separators between word chars.
+        core = s.rstrip(".")
+        if _IDENT_CHARS_RE.search(core) and not _SLASH_LABEL_RE.match(s):
             return True, "identifier"
         if s.islower() and s.isalpha():
             return True, "lower-token"

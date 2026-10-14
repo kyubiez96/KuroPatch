@@ -2,7 +2,8 @@
 
 Commands:
   collect    List translatable strings found in a .jar
-             (.properties + smali const-string + .class constants + packs).
+             (.properties + smali const-string + .class constants +
+             packs + the English TRAD_english.loc string table).
   translate  Apply a translations JSON ({source: translation}) to a .jar,
              or auto-translate it with the translate engine
              (--auto, --provider passthrough|agnes; the agnes provider reads

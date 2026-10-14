@@ -123,15 +123,44 @@ class AgnesProvider(BaseProvider):
         return key
 
     def _build_prompt(self, text, source_lang, target_lang):
-        return (
+        prompt = (
             f"Translate the following text from {source_lang} to {target_lang}.\n"
             "Return ONLY the translation, no explanations, no quotes.\n"
             "Preserve all placeholders exactly as they appear "
             "(e.g. %d, %s, %1$s, {name}, {0}). Do not translate them, "
             "do not reorder them, do not add or remove any.\n"
             "Preserve any HTML/XML tags exactly.\n"
-            f"Text: {text}"
+            # .loc rules (Gameloft in-game text): the $N codes are
+            # style switches consumed by the text renderer, never
+            # drawn -- dropping one breaks layout. Line breaks are
+            # manual layout. Fragments may be completed at runtime
+            # by concatenation, so surrounding whitespace is
+            # load-bearing. These rules are good practice for every
+            # game string, not just .loc, so they live in the
+            # generic prompt (the engine carries no origin info).
+            "Preserve $N style codes (like $0, $1, $2) exactly -- same "
+            "codes, same order, same positions. Never translate, drop, "
+            "or invent them.\n"
+            "Preserve line breaks exactly -- the translation must have "
+            "the same number of lines as the source.\n"
+            "Keep lines short -- the game renders text in narrow boxes.\n"
+            "Translate descriptive names; keep proper nouns (people, "
+            "enemies, places, titles) in the original language.\n"
+            "This string may be a fragment completed at runtime -- "
+            "preserve leading/trailing whitespace exactly.\n"
+            "If the string lists job titles or credits, translate the "
+            "titles only, never person names.\n"
         )
+        if target_lang == "id":
+            # Indonesian needs only ASCII; the .loc bitmap font is
+            # only proven for ASCII + Latin-1. Scoped to id: other
+            # targets may legitimately need accented characters.
+            prompt += (
+                "Use ASCII-only output: no curly quotes, no en/em dashes, "
+                "no ellipsis character.\n"
+            )
+        prompt += f"Text: {text}"
+        return prompt
 
     def _fetch(self, req):
         """POST ``req`` with retry on transient HTTP statuses (429 / 5xx).
