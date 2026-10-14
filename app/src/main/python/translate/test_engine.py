@@ -557,7 +557,10 @@ class TestAgnesProviderRetry(unittest.TestCase):
             return FakeResp(item)
 
         orig_urlopen = urllib.request.urlopen
-        orig_sleep = providers_mod._sleep
+        # Old code (pre-retry-fix) has no _sleep hook -- use getattr
+        # so the helper works there too (the tests then FAIL on
+        # behavior, not ERROR on the harness).
+        orig_sleep = getattr(providers_mod, "_sleep", None)
         urllib.request.urlopen = fake_urlopen
         providers_mod._sleep = lambda s: state["sleeps"].append(s)
         try:
@@ -569,7 +572,13 @@ class TestAgnesProviderRetry(unittest.TestCase):
                 return exc, state["calls"], state["sleeps"]
         finally:
             urllib.request.urlopen = orig_urlopen
-            providers_mod._sleep = orig_sleep
+            if orig_sleep is not None:
+                providers_mod._sleep = orig_sleep
+            else:
+                try:
+                    del providers_mod._sleep
+                except AttributeError:
+                    pass
             os.environ.pop("AGNES_API_KEY", None)
 
     @staticmethod
