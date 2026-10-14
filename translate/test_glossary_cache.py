@@ -187,9 +187,28 @@ class TestCache(unittest.TestCase):
             c.save()  # must not raise
             self.assertEqual(c.get("hi", "en", "id", "agnes"), "halo")
 
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_save_with_unserializable_value_does_not_crash(self):
+        # Final audit round 2: save() only caught OSError, so a
+        # poisoned in-memory value (non-JSON-serializable / circular)
+        # crashed the whole batch with TypeError / ValueError at save
+        # time -- AFTER all translations were done. Cache is
+        # best-effort: the write is dropped, the on-disk file stays
+        # intact, translation must not crash.
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.json")
+            c = TranslationCache(p)
+            c.put("good", "en", "id", "agnes", "bagus")
+            c.save()
+            c.put("bad", "en", "id", "agnes", object())  # not serializable
+            c.save()  # must not raise
+            c2 = TranslationCache(p)
+            self.assertEqual(c2.get("good", "en", "id", "agnes"), "bagus")
+            circular = {}
+            circular["self"] = circular
+            c.put("circ", "en", "id", "agnes", circular)
+            c.save()  # must not raise (ValueError: circular reference)
+            c3 = TranslationCache(p)
+            self.assertEqual(c3.get("good", "en", "id", "agnes"), "bagus")
 
 
 class TestFixedTranslations(unittest.TestCase):
@@ -225,3 +244,7 @@ class TestFixedTranslations(unittest.TestCase):
     def test_unknown_target_lang(self):
         from glossary import lookup_fixed
         self.assertIsNone(lookup_fixed("Monday", target_lang="en"))
+
+
+if __name__ == "__main__":
+    unittest.main()

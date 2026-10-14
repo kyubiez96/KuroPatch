@@ -98,7 +98,13 @@ class MainActivity : AppCompatActivity() {
     ) { result ->
         if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
         val uri = result.data?.data ?: return@registerForActivityResult
-        val name = queryName(uri) ?: "game.jar"
+        // DISPLAY_NAME comes from the document provider: a hostile or
+        // buggy provider could return "../evil.jar" or "a/b.jar", and
+        // File(cacheDir, jarName) would then escape the extract dir.
+        // Keep only the last path segment; "." / ".." / blank fall back.
+        val name = (queryName(uri) ?: "game.jar")
+            .substringAfterLast('/').substringAfterLast('\\')
+            .takeIf { it.isNotBlank() && it != "." && it != ".." } ?: "game.jar"
         // Refuse .apk: apktool needs a real JVM, cannot run on Android.
         if (name.endsWith(".apk", ignoreCase = true)) {
             showApkNotice()
@@ -319,16 +325,19 @@ class MainActivity : AppCompatActivity() {
                     binding.tvStatus.text =
                         "$changed strings translated, ${n - changed - failed} unchanged" +
                         if (failed > 0) ", $failed failed" else ""
-                    // Total provider failure: do NOT stash the
-                    // all-source map or enable Patch. The map holds
-                    // zero translations -- patching with it would
-                    // produce an untranslated jar labelled _id, and
-                    // it would also DESTROY a previous good
+                    // Only stash when something actually CHANGED.
+                    // changed == 0 covers BOTH failure modes with zero
+                    // translations: total provider failure (failed > 0)
+                    // and all-skipped / verbatim (failed == 0, e.g.
+                    // Sims 3 with a working provider). In either case
+                    // the map holds zero translations -- patching with
+                    // it would produce an untranslated jar labelled
+                    // _id, and it would also DESTROY a previous good
                     // translation (e.g. a failed re-translate after
                     // switching language). Keep the previous
                     // translations (if any) and leave Patch in its
                     // setBusy-computed state.
-                    if (!(failed > 0 && changed == 0)) {
+                    if (changed > 0) {
                         binding.btnPatch.isEnabled = true
                         // stash for patch step
                         translatedStrings = translated

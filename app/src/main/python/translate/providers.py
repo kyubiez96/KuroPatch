@@ -5,7 +5,38 @@ environment variables at runtime only -- never hardcoded, never logged.
 """
 import json
 import os
+import time
+import urllib.error
 import urllib.request
+
+# HTTP statuses worth retrying: rate-limit + server errors are
+# TRANSIENT. 4xx (401 bad key, 400 bad request, 404, ...) are NOT
+# retried -- retrying a bad key is just slow failure.
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_MAX_PROVIDER_RETRIES = 3
+# Server-sent Retry-After is honoured but capped: a runaway "wait
+# 3600s" must not stall the on-device translate job.
+_RETRY_AFTER_CAP = 10
+# Test hook: tests patch translate.providers._sleep to avoid real waits.
+_sleep = time.sleep
+
+
+def _retry_delay(attempt, headers):
+    """Backoff before retry number ``attempt`` (0-based).
+
+    Exponential 1s / 2s / 4s, or the server's Retry-After header when
+    present and parseable (capped). Unparseable / negative values fall
+    back to exponential.
+    """
+    retry_after = None
+    if headers is not None:
+        try:
+            retry_after = int(headers.get("Retry-After", ""))
+        except (ValueError, TypeError, AttributeError):
+            retry_after = None
+    if retry_after is not None and retry_after >= 0:
+        return min(retry_after, _RETRY_AFTER_CAP)
+    return min(2 ** attempt, 8)
 
 
 class BaseProvider:
@@ -68,6 +99,33 @@ class AgnesProvider(BaseProvider):
             f"Text: {text}"
         )
 
+    def _fetch(self, req):
+        """POST ``req`` with retry on transient HTTP statuses (429 / 5xx).
+
+        A 429 means "slow down", not "provider dead". Without a retry,
+        a burst of strings trips the free-tier rate limit, the engine
+        counts 3 consecutive failures and aborts the whole batch --
+        a jar with more than a handful of strings could never
+        translate. 4xx and network errors fail FAST: retrying a bad
+        key is just slow failure, and a dead network must not hang
+        (the engine's batch abort handles it).
+        """
+        for attempt in range(_MAX_PROVIDER_RETRIES + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                if (exc.code not in _RETRYABLE_STATUS
+                        or attempt >= _MAX_PROVIDER_RETRIES):
+                    raise RuntimeError(
+                        f"agnes provider request failed: {exc}") from exc
+                _sleep(_retry_delay(attempt, exc.headers))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"agnes provider request failed: {exc}") from exc
+        # Unreachable: the loop always returns or raises.
+        raise RuntimeError("agnes provider request failed: no response")
+
     def translate(self, text, source_lang="en", target_lang="id"):
         if not text.strip():
             return text
@@ -86,11 +144,7 @@ class AgnesProvider(BaseProvider):
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:
-            raise RuntimeError(f"agnes provider request failed: {exc}") from exc
+        data = self._fetch(req)
         try:
             choice = data["choices"][0]
             content = choice["message"]["content"]

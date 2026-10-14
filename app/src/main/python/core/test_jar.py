@@ -768,6 +768,132 @@ class TestDataKeyDelimiters(unittest.TestCase):
             got = jar_mod.collect_strings(src)
             self.assertNotIn("SwordOfFire", got["strings"])
 
+    def test_multi_pair_with_spaces_dropped(self):
+        # "key=value; other=thing": spaces AFTER a delimiter are
+        # delimiter-adjacent, never inside a token -- still key-shaped,
+        # still dropped.
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "item=SwordOfFire; qty=3\n", "SwordOfFire")
+            got = jar_mod.collect_strings(src)
+            self.assertNotIn("SwordOfFire", got["strings"])
+
+
+class TestDataKeyProseGate(unittest.TestCase):
+    """Final audit round 2: the round-1 delimiter split over-skipped
+    ordinary prose words -- "Welcome, traveler!" splits on "," to a
+    "Welcome" token, "Help! ..." to "Help", "Menu (press ...)" to
+    "Menu", "Tom & Jerry" to "Tom". Token matching now applies only
+    to key-shaped runs (no token contains a space, no sentence
+    boundary, no trailing !/?). Each test below FAILED on the
+    round-1 code and PASSES with the gate."""
+
+    def _jar(self, td, data_content, candidate):
+        src = os.path.join(td, "game.jar")
+        with zipfile.ZipFile(src, "w") as z:
+            z.writestr("data.txt", data_content)
+            z.writestr("Game.class", _make_class_with_string(candidate))
+        return src
+
+    def test_comma_prose_not_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "Welcome, traveler! Enjoy your stay.\n", "Welcome")
+            self.assertIn("Welcome", jar_mod.collect_strings(src)["strings"])
+
+    def test_bang_prose_not_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "Help! Press start to continue.\n", "Help")
+            self.assertIn("Help", jar_mod.collect_strings(src)["strings"])
+
+    def test_paren_prose_not_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "Menu (press START) to continue.\n", "Menu")
+            self.assertIn("Menu", jar_mod.collect_strings(src)["strings"])
+
+    def test_amp_prose_not_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "Tom & Jerry are friends.\n", "Tom")
+            self.assertIn("Tom", jar_mod.collect_strings(src)["strings"])
+
+    def test_staccato_prose_not_dropped(self):
+        # Single-word tokens only ("Run! Fight! Win!" splits on "!"
+        # to bare tokens), but "! " sentence boundaries make it
+        # prose, not a key list. ("Go" would also be dropped by the
+        # minimum-length filter, so the candidate is "Run".)
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "Run! Fight! Win!\n", "Run")
+            self.assertIn("Run", jar_mod.collect_strings(src)["strings"])
+
+    def test_single_word_exclamation_not_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "Welcome!\n", "Welcome")
+            self.assertIn("Welcome", jar_mod.collect_strings(src)["strings"])
+
+
+class TestDataKeyUTF16(unittest.TestCase):
+    """Final audit round 2: _data_key_strings only scanned UTF-8 runs.
+    A key stored as UTF-16LE / UTF-16BE text in a data file (a
+    UTF-16 TRAD-style index) was invisible -- the .class twin got
+    collected and translated, breaking the lookup the same way the
+    Castlevania language names did. Runs are now also extracted in
+    UTF-16LE/BE (Latin-1 range) and matched the same way."""
+
+    def _jar(self, td, data_bytes, candidate):
+        src = os.path.join(td, "game.jar")
+        with zipfile.ZipFile(src, "w") as z:
+            z.writestr("data.dat", data_bytes)
+            z.writestr("Game.class", _make_class_with_string(candidate))
+        return src
+
+    def test_utf16le_bare_key_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, b"\x00\x00" + "CrystalSword".encode("utf-16-le")
+                            + b"\x00\x00", "CrystalSword")
+            self.assertNotIn("CrystalSword", jar_mod.collect_strings(src)["strings"])
+
+    def test_utf16be_bare_key_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, b"\x00\x00" + "CrystalSword".encode("utf-16-be")
+                            + b"\x00\x00", "CrystalSword")
+            self.assertNotIn("CrystalSword", jar_mod.collect_strings(src)["strings"])
+
+    def test_utf16le_key_value_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "item=CrystalSword\n".encode("utf-16-le"),
+                            "CrystalSword")
+            self.assertNotIn("CrystalSword", jar_mod.collect_strings(src)["strings"])
+
+    def test_utf16le_non_ascii_key_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "CaféSword".encode("utf-16-le"), "CaféSword")
+            self.assertNotIn("CaféSword", jar_mod.collect_strings(src)["strings"])
+
+    def test_utf16le_with_bom_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, b"\xff\xfe" + "CrystalSword".encode("utf-16-le"),
+                            "CrystalSword")
+            self.assertNotIn("CrystalSword", jar_mod.collect_strings(src)["strings"])
+
+    def test_utf16le_prose_not_dropped(self):
+        # Prose-safe must hold in UTF-16 too: a candidate embedded in a
+        # UTF-16 sentence is NOT a key (spaces are not delimiters).
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "Help me find the CrystalSword today".encode("utf-16-le"),
+                            "CrystalSword")
+            self.assertIn("CrystalSword", jar_mod.collect_strings(src)["strings"])
+
 
 class TestReverseLanguageNames(unittest.TestCase):
     """Final audit round 1: _is_language_name only recognised the

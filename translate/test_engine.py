@@ -513,7 +513,150 @@ class TestTruncatedResponseRejected(unittest.TestCase):
             os.environ.pop("AGNES_API_KEY", None)
 
 
-class TestBatchAbortOnProviderDeath(unittest.TestCase):
+class TestAgnesProviderRetry(unittest.TestCase):
+    """Final audit round 2: 429 / 5xx must RETRY with backoff.
+
+    Before the fix, a single 429 raised immediately -- a burst of
+    strings tripped the free-tier rate limit, the engine counted 3
+    consecutive failures and aborted the whole batch. A 429 means
+    "slow down", not "provider dead".
+    """
+
+    def _run(self, behaviors):
+        """behaviors: list of HTTPError | dict-payload, one per urlopen call.
+
+        Returns (result_or_exception, calls, sleeps).
+        """
+        import json
+        import urllib.error
+        import urllib.request
+        import providers as providers_mod
+        from providers import AgnesProvider
+
+        class FakeResp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self):
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        state = {"calls": 0, "sleeps": []}
+        it = iter(behaviors)
+
+        def fake_urlopen(req, timeout=None):
+            state["calls"] += 1
+            item = next(it)
+            if isinstance(item, Exception):
+                raise item
+            return FakeResp(item)
+
+        orig_urlopen = urllib.request.urlopen
+        orig_sleep = providers_mod._sleep
+        urllib.request.urlopen = fake_urlopen
+        providers_mod._sleep = lambda s: state["sleeps"].append(s)
+        try:
+            os.environ["AGNES_API_KEY"] = "dummy-for-test"
+            try:
+                out = AgnesProvider().translate("Hello", "en", "id")
+                return out, state["calls"], state["sleeps"]
+            except Exception as exc:  # noqa: BLE001 -- test captures it
+                return exc, state["calls"], state["sleeps"]
+        finally:
+            urllib.request.urlopen = orig_urlopen
+            providers_mod._sleep = orig_sleep
+            os.environ.pop("AGNES_API_KEY", None)
+
+    @staticmethod
+    def _http_error(code, retry_after=None):
+        import urllib.error
+        hdrs = {"Retry-After": str(retry_after)} if retry_after is not None else {}
+        return urllib.error.HTTPError(
+            "https://apihub.agnes-ai.com/v1/chat/completions",
+            code, "Too Many Requests" if code == 429 else "Error",
+            hdrs, None)
+
+    @staticmethod
+    def _ok_payload(text="Halo"):
+        return {"choices": [{"message": {"content": text},
+                             "finish_reason": "stop"}]}
+
+    def test_429_recovers_after_retries(self):
+        out, calls, sleeps = self._run([
+            self._http_error(429), self._http_error(429),
+            self._ok_payload("Halo")])
+        self.assertEqual(out, "Halo")
+        self.assertEqual(calls, 3)
+        self.assertEqual(sleeps, [1, 2])
+
+    def test_429_exhausted_raises_after_three_retries(self):
+        out, calls, sleeps = self._run([self._http_error(429)] * 4)
+        self.assertIsInstance(out, RuntimeError)
+        self.assertIn("429", str(out))
+        self.assertEqual(calls, 4)  # initial + 3 retries
+        self.assertEqual(sleeps, [1, 2, 4])
+
+    def test_401_not_retried(self):
+        out, calls, sleeps = self._run([self._http_error(401)])
+        self.assertIsInstance(out, RuntimeError)
+        self.assertEqual(calls, 1)
+        self.assertEqual(sleeps, [])
+
+    def test_503_retried(self):
+        out, calls, sleeps = self._run([
+            self._http_error(503), self._ok_payload("Halo")])
+        self.assertEqual(out, "Halo")
+        self.assertEqual(calls, 2)
+        self.assertEqual(sleeps, [1])
+
+    def test_retry_after_header_honored_and_capped(self):
+        out, calls, sleeps = self._run([
+            self._http_error(429, retry_after=5), self._ok_payload("Halo")])
+        self.assertEqual(out, "Halo")
+        self.assertEqual(sleeps, [5])
+        out, calls, sleeps = self._run([
+            self._http_error(429, retry_after=3600), self._ok_payload("Halo")])
+        self.assertEqual(out, "Halo")
+        self.assertEqual(sleeps, [10])  # capped, never wait an hour
+
+    def test_network_error_not_retried(self):
+        import urllib.error
+        out, calls, sleeps = self._run([
+            urllib.error.URLError("connection refused")])
+        self.assertIsInstance(out, RuntimeError)
+        self.assertEqual(calls, 1)
+        self.assertEqual(sleeps, [])
+
+
+class TestCacheSharedAcrossBatches(unittest.TestCase):
+    def test_cache_is_global_not_per_jar(self):
+        # Round-2 audit, part 3: the cache is keyed by
+        # (text, source, target, provider), NOT per-jar. A second
+        # translate batch (a different game) must hit the first
+        # batch's entry without calling the provider again.
+        with tempfile.TemporaryDirectory() as d:
+            cache = TranslationCache(os.path.join(d, "c.json"))
+            p1 = MockProvider({"Choose your character": "Pilih karaktermu"})
+            r1 = translate_strings(
+                {"gameA": "Choose your character"}, provider=p1, cache=cache)
+            self.assertEqual(r1[0].translation, "Pilih karaktermu")
+
+            class MustNotBeCalled(BaseProvider):
+                name = "mock"
+
+                def translate(self, text, source_lang="en", target_lang="id"):
+                    raise AssertionError("provider must not be called")
+
+            r2 = translate_strings(
+                {"gameB": "Choose your character"},
+                provider=MustNotBeCalled(), cache=cache)
+            self.assertEqual(r2[0].status, "cached")
+            self.assertEqual(r2[0].translation, "Pilih karaktermu")
     def test_dead_provider_aborts_after_three_errors(self):
         # Round-4 audit: a dead network used to mean one timeout PER
         # string (97 strings = 97 timeouts). Three consecutive

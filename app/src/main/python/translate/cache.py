@@ -67,11 +67,15 @@ class TranslationCache:
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(self._data, fh, ensure_ascii=False, indent=1)
             os.replace(tmp, self.path)
-        except OSError:
+        except (OSError, TypeError, ValueError):
             # Cache is best-effort: a directory sitting at the cache
             # path (or a read-only location) must never crash
             # translation -- os.replace(file, dir) raises
             # IsADirectoryError. Drop the write, clean up the temp.
+            # TypeError / ValueError cover a poisoned in-memory value
+            # (non-JSON-serializable, circular reference): json.dump
+            # raises, and that must not crash the batch either --
+            # the old cache file on disk stays intact.
             try:
                 os.unlink(self.path + ".tmp")
             except OSError:

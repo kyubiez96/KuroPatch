@@ -100,12 +100,27 @@ _CJK_RE = re.compile(r"[\u2e80-\u9fff]", re.UNICODE)
 # Maximal printable runs (UTF-8 text incl. high bytes) for data-key
 # extraction. Runs shorter than 3 bytes are noise.
 _DATA_RUN_RE = re.compile(rb"[\x20-\x7e\x80-\xff]{3,}")
+# UTF-16LE / UTF-16BE runs (Latin-1 range: low byte printable, high
+# byte 0x00). A key stored as UTF-16 text in a data file is the same
+# lookup key as its UTF-8 twin -- the game decodes both to the same
+# in-memory string before comparing. Characters >= U+0100 (both UTF-16
+# bytes nonzero, e.g. Cyrillic) are NOT covered: J2ME game keys are
+# overwhelmingly ASCII / Latin-1, and chasing full UTF-16 would mean
+# decoding every binary blob as text.
+_DATA_UTF16LE_RE = re.compile(rb"(?:[\x20-\x7e\x80-\xff]\x00){3,}")
+_DATA_UTF16BE_RE = re.compile(rb"(?:\x00[\x20-\x7e\x80-\xff]){3,}")
 # Structural delimiters inside a data run: keys are stored as
 # key=value, a;b;c, "quoted", key: value, ... Splitting runs on
 # these finds keys that exact-run matching misses. Deliberately
 # NOT space / '/' / '-' / '.' -- those appear inside prose and
 # paths, and splitting on them would flag ordinary words as keys.
 _DATA_DELIM_RE = re.compile(rb"[=;:,|\"'\t<>{}()\[\]&!]+")
+# A run is PROSE (not key material) if it has a sentence boundary:
+# a sentence terminator (./!/?) followed by whitespace and more
+# text. Key material (key=value, a;b;c, "quoted", key: value) never
+# has one. Catches staccato prose ("Go. Fight. Win.") whose tokens
+# contain no spaces and would otherwise pass the key-shape gate.
+_SENTENCE_BOUNDARY_RE = re.compile(rb"[.!?]\s+\S")
 # Keys are short identifiers; truncate over-long runs before matching.
 _MAX_KEY_LEN = 200
 # One trailing "(...)" suffix (region qualifier: "Inggris (US)").
@@ -153,12 +168,20 @@ def _data_key_strings(workspace, candidates):
     ``a;b;c`` and ``"quoted"`` entries are caught -- exact-run
     matching alone missed all three (proven by adversarial probe).
     Spaces are deliberately NOT delimiters: splitting on them would
-    flag ordinary prose words as keys. .class/.properties/smali
-    (translation sources), string packs (translation targets) and
-    META-INF metadata are excluded from the data blob. False positives
-    fail SAFE: an over-skipped string just stays untranslated, the
-    game still works. False negatives remain possible for keys stored
-    in UTF-16 or other non-UTF-8 encodings.
+    flag ordinary prose words as keys. Token matching is gated on the
+    run being key-shaped (no token contains a space, no sentence
+    boundary, no trailing !/?): without the gate the split over-skips
+    prose words ("Welcome,", "Help!", "Menu (...)", "Tom & ...").
+    Runs are extracted in three
+    encodings -- UTF-8, UTF-16LE and UTF-16BE (Latin-1 range) -- so a
+    key stored as UTF-16 text is caught too (proven by adversarial
+    probe: a UTF-16LE ``TRAD``-style index was previously invisible).
+    .class/.properties/smali (translation sources), string packs
+    (translation targets) and META-INF metadata are excluded from the
+    data blob. False positives fail SAFE: an over-skipped string just
+    stays untranslated, the game still works. False negatives remain
+    possible for keys stored in UTF-16 with characters >= U+0100 or
+    in other non-UTF-8 encodings.
     """
     cand_bytes = {}
     for c in candidates:
@@ -184,8 +207,20 @@ def _data_key_strings(workspace, candidates):
                     raw = fh.read()
             except OSError:
                 continue
-            for m in _DATA_RUN_RE.finditer(raw):
-                run = m.group(0)
+            # Runs in all three encodings, decoded to UTF-8 bytes for
+            # matching. UTF-16 low bytes are Latin-1 code points:
+            # latin-1 decode then UTF-8 re-encode maps them to the
+            # same bytes as the UTF-8 candidate keys.
+            runs = [m.group(0) for m in _DATA_RUN_RE.finditer(raw)]
+            runs.extend(
+                m.group(0)[0::2].decode("latin-1").encode("utf-8")
+                for m in _DATA_UTF16LE_RE.finditer(raw)
+            )
+            runs.extend(
+                m.group(0)[1::2].decode("latin-1").encode("utf-8")
+                for m in _DATA_UTF16BE_RE.finditer(raw)
+            )
+            for run in runs:
                 if len(run) > _MAX_KEY_LEN:
                     run = run[:_MAX_KEY_LEN]
                 hit = cand_bytes.get(run)
@@ -197,10 +232,30 @@ def _data_key_strings(workspace, candidates):
                 # Tokens are stripped: "item: SwordOfFire" splits to
                 # " SwordOfFire" (leading space after the colon) and
                 # must still match the stripped candidate.
-                for tok in _DATA_DELIM_RE.split(run):
-                    tok = tok.strip()
-                    if not tok:
-                        continue
+                #
+                # GATE: token matching applies ONLY to key-shaped
+                # runs. The delimiter split alone over-skips ordinary
+                # prose words -- "Welcome, traveler!" splits on ","
+                # to a "Welcome" token, "Help! ..." to "Help",
+                # "Menu (press ...)" to "Menu", "Tom & Jerry" to
+                # "Tom" -- all real UI strings, wrongly dropped as
+                # "keys" (final audit round 2). A run is key-shaped
+                # iff every delimiter-token is a single token (no
+                # space inside -- a token with a space is a phrase,
+                # i.e. prose), it has no sentence boundary, and it
+                # does not end with a sentence terminator (!/? --
+                # covers single-word exclamations like "Welcome!").
+                # Key material passes all three: key=value, a;b;c,
+                # "quoted", key: value, even "key=value; other=thing"
+                # (spaces after ";" are delimiter-adjacent, never
+                # inside a token). Prose fails at least one.
+                tokens = [t.strip() for t in _DATA_DELIM_RE.split(run)]
+                tokens = [t for t in tokens if t]
+                if (any(b" " in t for t in tokens)
+                        or _SENTENCE_BOUNDARY_RE.search(run)
+                        or run.rstrip().endswith((b"!", b"?"))):
+                    continue
+                for tok in tokens:
                     hit = cand_bytes.get(tok)
                     if hit is not None:
                         keys.add(hit)
