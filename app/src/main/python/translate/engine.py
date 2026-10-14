@@ -1,23 +1,36 @@
 """Auto-translate engine -- orchestrates guard, glossary, cache,
 provider and validation for a batch of game strings.
 """
+import time
+
 try:
     from . import guard as guard_mod
     from .cache import TranslationCache
     from .glossary import Glossary, lookup_fixed
-    from .providers import PassthroughProvider
+    from .providers import PassthroughProvider, TransientProviderError
     from .validator import validate
 except ImportError:  # standalone script usage
     import guard as guard_mod
     from cache import TranslationCache
     from glossary import Glossary, lookup_fixed
-    from providers import PassthroughProvider
+    from providers import PassthroughProvider, TransientProviderError
     from validator import validate
 
 
 # Consecutive provider exceptions (network/API down) that abort a
 # batch instead of timing out once per string.
 _MAX_CONSECUTIVE_PROVIDER_ERRORS = 3
+
+# Batch recovery: when the abort threshold trips on a TRANSIENT
+# error (rate-limit / 5xx), back off and retry the batch before
+# mass-failing the rest. Bounded: a truly dead provider (bad key,
+# no network -- PERMANENT errors) never triggers recovery and
+# still fails fast. Backoffs are 10s then 30s.
+_MAX_PROVIDER_RECOVERIES = 2
+_RECOVERY_BACKOFFS = (10.0, 30.0)
+
+# Test hook: tests patch translate.engine._sleep to avoid real waits.
+_sleep = time.sleep
 
 
 class TranslateResult:
@@ -104,6 +117,7 @@ def translate_strings(strings, target_lang="id", source_lang="en",
     # fixed-map / cache hits are still served normally.
     consecutive_provider_errors = 0
     provider_dead = False
+    recoveries_used = 0
     for key, text in strings.items():
         skip, reason = guard_mod.should_skip(text)
         if skip:
@@ -156,6 +170,14 @@ def translate_strings(strings, target_lang="id", source_lang="en",
             continue
         while attempt <= max_retries:
             try:
+                # Throttle: pace real provider calls so a 400-string
+                # .loc batch doesn't trip the free-tier rate limit
+                # with rapid-fire requests. Providers without a
+                # throttle_seconds attribute (stubs, passthrough)
+                # get no delay -- tests stay instant.
+                delay = getattr(provider, "throttle_seconds", 0) or 0
+                if delay > 0:
+                    _sleep(delay)
                 translated = provider.translate(
                     prompt_text, source_lang, target_lang)
                 # Provider answered (even if validation then rejects
@@ -166,6 +188,20 @@ def translate_strings(strings, target_lang="id", source_lang="en",
                 consecutive_provider_errors += 1
                 if (consecutive_provider_errors
                         >= _MAX_CONSECUTIVE_PROVIDER_ERRORS):
+                    # TRANSIENT only (rate-limit / 5xx): back off and
+                    # retry the batch instead of mass-failing the
+                    # rest. v2.0.11 Castlevania: 3 consecutive 429s
+                    # mass-failed 327 strings. Recovery retries THIS
+                    # string (attempt not consumed); if the provider
+                    # recovered, the batch continues normally.
+                    # PERMANENT errors (bad key, no network, ...) get
+                    # NO recovery -- a truly dead provider fails fast.
+                    if (isinstance(exc, TransientProviderError)
+                            and recoveries_used < _MAX_PROVIDER_RECOVERIES):
+                        recoveries_used += 1
+                        _sleep(_RECOVERY_BACKOFFS[recoveries_used - 1])
+                        consecutive_provider_errors = 0
+                        continue
                     provider_dead = True
                 break
             check = validate(text, translated)

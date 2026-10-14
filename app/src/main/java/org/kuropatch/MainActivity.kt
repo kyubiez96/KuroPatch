@@ -336,14 +336,22 @@ class MainActivity : AppCompatActivity() {
                         translatedStrings = translated
                         translatedLangCode = langCode()
                     }
-                    // Total provider failure (nothing translated because
-                    // the provider is dead) must be LOUD, not a quiet
-                    // "unchanged" status: the user needs to know to
-                    // check their API key / connection.
-                    if (failed > 0 && changed == 0) {
-                        showError("Translate failed",
-                            if (firstError.isNotEmpty()) firstError
-                            else "Provider failed on all strings — check your API key and connection.")
+                    // ANY failure must be LOUD, not just total failure:
+                    // v2.0.11 Castlevania showed "26 translated, 327
+                    // failed" with NO reason -- the dialog only fired
+                    // when changed == 0. Partial translations stay
+                    // available for patching; the user still learns
+                    // WHY the rest failed.
+                    if (failed > 0) {
+                        val detail = if (firstError.isNotEmpty()) firstError
+                            else "Provider failed — check your API key and connection."
+                        if (changed == 0) {
+                            showError("Translate failed", detail)
+                        } else {
+                            showError("Translate partially failed",
+                                "$failed string(s) failed: $detail " +
+                                "Partial translations are still available for patching.")
+                        }
                     }
                 }
             } catch (e: Exception) {

@@ -9,6 +9,14 @@ import time
 import urllib.error
 import urllib.request
 
+
+class TransientProviderError(RuntimeError):
+    """A provider failure that MIGHT recover: HTTP 429 / 5xx even after
+    the provider's own retries. The engine may back off and retry the
+    batch on this; every other provider error is PERMANENT (bad key,
+    no network, truncated response) and fails fast with no recovery.
+    """
+
 # HTTP statuses worth retrying: rate-limit + server errors are
 # TRANSIENT. 4xx (401 bad key, 400 bad request, 404, ...) are NOT
 # retried -- retrying a bad key is just slow failure.
@@ -106,6 +114,13 @@ class AgnesProvider(BaseProvider):
     name = "agnes"
     endpoint = "https://apihub.agnes-ai.com/v1/chat/completions"
     model = "agnes-3.0-flash"
+    # Seconds to wait before EVERY provider call. The free tier
+    # rate-limits rapid-fire bursts: a 400-string .loc batch with no
+    # pacing trips 429s, 3 consecutive 429s trip the engine's batch
+    # abort, and the remaining ~300 strings mass-fail (v2.0.11
+    # Castlevania: 327 failed). The engine reads this attribute
+    # (providers without it -- stubs, passthrough -- get no delay).
+    throttle_seconds = 0.6
 
     def __init__(self, timeout=30):
         self.timeout = timeout
@@ -180,6 +195,14 @@ class AgnesProvider(BaseProvider):
             except urllib.error.HTTPError as exc:
                 if (exc.code not in _RETRYABLE_STATUS
                         or attempt >= _MAX_PROVIDER_RETRIES):
+                    # Retryable status that survived all provider-level
+                    # retries: TRANSIENT -- the engine may back off
+                    # (10s/30s) and retry the batch. Anything else is
+                    # permanent (bad key, bad request) -- fail fast.
+                    if (exc.code in _RETRYABLE_STATUS
+                            and attempt >= _MAX_PROVIDER_RETRIES):
+                        raise TransientProviderError(
+                            f"agnes provider request failed: {exc}") from exc
                     raise RuntimeError(
                         f"agnes provider request failed: {exc}") from exc
                 _sleep(_retry_delay(attempt, exc.headers))

@@ -558,6 +558,121 @@ class TestAgnesProviderKeyHandling(unittest.TestCase):
                 os.environ["AGNES_API_KEY"] = env
 
 
+class TestThrottleAndRecovery(unittest.TestCase):
+    """v2.0.11 Castlevania on-device: 26 translated, 327 failed.
+
+    A 400-string .loc batch trips the free-tier rate limit with
+    rapid-fire calls; 3 consecutive 429s mass-failed the rest.
+    Fix: throttle between calls + back-off recovery on TRANSIENT
+    errors before mass-failing. PERMANENT errors still fail fast.
+    """
+
+    def _run_with_sleep(self, strings, provider):
+        import engine as engine_mod
+        sleeps = []
+        orig = engine_mod._sleep
+        engine_mod._sleep = lambda s: sleeps.append(s)
+        try:
+            res = translate_strings(strings, provider=provider)
+        finally:
+            engine_mod._sleep = orig
+        return res, sleeps
+
+    def test_throttle_paces_real_provider_calls(self):
+        class ThrottledProvider(BaseProvider):
+            name = "throttled"
+            throttle_seconds = 0.6
+
+            def translate(self, text, source_lang="en", target_lang="id"):
+                return "ID:" + text
+
+        res, sleeps = self._run_with_sleep(
+            {"a": "Hello world", "b": "Good morning"}, ThrottledProvider())
+        self.assertEqual([r.status for r in res],
+                         ["translated", "translated"])
+        self.assertEqual(sleeps, [0.6, 0.6])
+
+    def test_no_throttle_for_stub_provider(self):
+        res, sleeps = self._run_with_sleep(
+            {"a": "Hello world"}, MockProvider())
+        self.assertEqual(res[0].status, "translated")
+        self.assertEqual(sleeps, [])
+
+    def test_transient_errors_recover_and_batch_continues(self):
+        from providers import TransientProviderError
+
+        class FlakyTransient(BaseProvider):
+            name = "flaky"
+
+            def __init__(self):
+                self.calls = 0
+
+            def translate(self, text, source_lang="en", target_lang="id"):
+                self.calls += 1
+                if self.calls <= 3:
+                    raise TransientProviderError(
+                        "agnes provider request failed: 429")
+                return "ID:" + text
+
+        p = FlakyTransient()
+        strings = {f"k{i}": f"String number {i} here" for i in range(5)}
+        res, sleeps = self._run_with_sleep(strings, p)
+        # The first two strings fail individually (the provider's own
+        # _fetch already retried each 429 3x before raising). The 3rd
+        # consecutive error trips the abort threshold -- WITHOUT the
+        # fix the remaining strings would ALL mass-fail. WITH it, the
+        # engine recovers (10s backoff), retries the current string,
+        # and the batch continues.
+        self.assertEqual([r.status for r in res],
+                         ["failed", "failed", "translated", "translated",
+                          "translated"])
+        self.assertEqual(sleeps, [10.0])  # one recovery backoff
+        self.assertEqual(p.calls, 6)
+
+    def test_transient_recovery_exhausted_mass_fails(self):
+        from providers import TransientProviderError
+
+        class AlwaysTransient(BaseProvider):
+            name = "always-transient"
+
+            def __init__(self):
+                self.calls = 0
+
+            def translate(self, text, source_lang="en", target_lang="id"):
+                self.calls += 1
+                raise TransientProviderError(
+                    "agnes provider request failed: 429")
+
+        p = AlwaysTransient()
+        strings = {f"k{i}": f"String number {i} here" for i in range(5)}
+        res, sleeps = self._run_with_sleep(strings, p)
+        self.assertEqual([r.status for r in res], ["failed"] * 5)
+        self.assertEqual(sleeps, [10.0, 30.0])  # capped at 2 recoveries
+        # 7 calls, not 9: the streak resets after each recovery, so
+        # the 2nd recovery is spent on a LATER string's threshold
+        # trip (k4), not on re-retrying k2. Recoveries are a
+        # batch-level budget; after both are spent the batch dies.
+        self.assertEqual(p.calls, 7)
+
+    def test_permanent_errors_fail_fast_without_recovery(self):
+        class DeadProvider(BaseProvider):
+            name = "dead"
+
+            def __init__(self):
+                self.calls = 0
+
+            def translate(self, text, source_lang="en", target_lang="id"):
+                self.calls += 1
+                raise RuntimeError("network down")
+
+        p = DeadProvider()
+        strings = {f"k{i}": f"String number {i} here" for i in range(5)}
+        res, sleeps = self._run_with_sleep(strings, p)
+        self.assertEqual([r.status for r in res], ["failed"] * 5)
+        self.assertEqual(sleeps, [])  # no recovery sleeps for dead provider
+        self.assertEqual(p.calls, 3)
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -825,6 +940,17 @@ class TestAgnesProviderRetry(unittest.TestCase):
         self.assertIsInstance(out, RuntimeError)
         self.assertIn("429", str(out))
         self.assertEqual(calls, 4)  # initial + 3 retries
+        self.assertEqual(sleeps, [1, 2, 4])
+
+    def test_429_exhausted_raises_transient(self):
+        # v2.0.11 fix: a 429 that survives all provider-level retries
+        # is TRANSIENT -- the engine may back off and retry the batch.
+        # (Still a RuntimeError subclass, so the older exhausted test
+        # keeps passing.)
+        from providers import TransientProviderError
+        out, calls, sleeps = self._run([self._http_error(429)] * 4)
+        self.assertIsInstance(out, TransientProviderError)
+        self.assertEqual(calls, 4)
         self.assertEqual(sleeps, [1, 2, 4])
 
     def test_401_not_retried(self):
