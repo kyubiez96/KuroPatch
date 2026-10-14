@@ -331,6 +331,48 @@ class TestPropertiesEdgeCases(unittest.TestCase):
         _utf8, string_only = _parse_constant_pool(data)
         self.assertIn(1, string_only)
 
+    def test_bom_stripped_from_first_key(self):
+        # Round-2 audit: a UTF-8 BOM made the first key parse as
+        # "\ufeffhello", so key lookups for "hello" missed.
+        from core.patcher import PropertiesFile
+        pf = PropertiesFile.loads(b"\xef\xbb\xbfhello=world\n")
+        self.assertEqual([e.key for e in pf.entries], ["hello"])
+        # Unchanged file round-trips byte-for-byte (BOM preserved).
+        self.assertEqual(pf.to_bytes(), b"\xef\xbb\xbfhello=world\n")
+        # Changed file still patches the value.
+        pf.entries[0].value = "dunia"
+        self.assertIn(b"dunia", pf.to_bytes())
+
+    def test_class_oversize_boundary(self):
+        # Round-2 audit: the 64KB skip is a boundary -- exactly 65535
+        # bytes must patch, 65536 must skip. (The earlier probe used a
+        # fixture whose Utf8 was also the class name, so it never
+        # exercised this path at all.)
+        from core.patcher import patch_class_strings
+        data = _make_class_with_string("Hello Player")
+        out, n = patch_class_strings(data, {"Hello Player": "X" * 65535})
+        self.assertEqual(n, 1)
+        out, n = patch_class_strings(data, {"Hello Player": "X" * 65536})
+        self.assertEqual(n, 0)
+        self.assertEqual(out, data)
+        # Multibyte: 40000 U+00E9 = 80000 bytes -- skip on BYTES, not chars.
+        out, n = patch_class_strings(data, {"Hello Player": "\u00e9" * 40000})
+        self.assertEqual(n, 0)
+
+    def test_class_modified_utf8_nul_round_trip(self):
+        # Round-2 audit: Java modified UTF-8 encodes NUL as \xc0\x80.
+        from core.patcher import patch_class_strings, iter_class_strings
+        raw = b"A\xc0\x80B"
+        cp = struct.pack(">H", 3)
+        cp += b"\x01" + struct.pack(">H", len(raw)) + raw  # Utf8 #1
+        cp += b"\x08" + struct.pack(">H", 1)  # String #2 -> #1
+        data = b"\xca\xfe\xba\xbe" + struct.pack(">HH", 0, 52) + cp
+        data += struct.pack(">HHHHHH", 0x0021, 2, 2, 0, 0, 0)
+        self.assertEqual(list(iter_class_strings(data)), [(1, "A\x00B")])
+        out, n = patch_class_strings(data, {"A\x00B": "X\x00Y"})
+        self.assertEqual(n, 1)
+        self.assertEqual(list(iter_class_strings(out)), [(1, "X\x00Y")])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -158,6 +158,11 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(res[0].status, "skipped")
         self.assertEqual(res[0].translation, 12345)
 
+    def test_none_input_returns_empty(self):
+        # Round-2 audit: translate_strings(None) raised a raw
+        # TypeError from dict(None). Now: empty list, no crash.
+        self.assertEqual(translate_strings(None), [])
+
     def test_results_to_dict(self):
         res = translate_strings({"a": "Hi", "b": "1080x1920"},
                                 provider=MockProvider())

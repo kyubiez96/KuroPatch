@@ -247,6 +247,12 @@ class PropertiesFile:
         try:
             text = data.decode("utf-8")
             charset = "utf-8"
+            # A UTF-8 BOM is a signature, not content: without this
+            # the first key parses as "\ufeffhello" and key lookups
+            # for "hello" miss. The raw bytes (with BOM) are kept
+            # in self.raw, so an unchanged file round-trips intact.
+            if text.startswith("\ufeff"):
+                text = text[1:]
         except UnicodeDecodeError:
             # Java <= 8 reads these as ISO-8859-1, which never fails.
             text = data.decode("iso-8859-1")

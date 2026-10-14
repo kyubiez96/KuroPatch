@@ -84,6 +84,8 @@ def translate_strings(strings, target_lang="id", source_lang="en",
     """
     provider = provider or PassthroughProvider()
     glossary = glossary or Glossary()
+    if strings is None:
+        return []
     strings = _coerce_str_dict(strings)
 
     results = []
