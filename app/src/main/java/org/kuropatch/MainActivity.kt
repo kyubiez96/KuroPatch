@@ -90,8 +90,17 @@ class MainActivity : AppCompatActivity() {
         }
         jarUri = uri
         jarName = name
+        // Fresh pick = fresh state: a previous jar's extracted /
+        // translated strings must NEVER leak into this jar's flow
+        // (old code left Patch enabled with jar A's translations,
+        // which would have patched jar B with jar A's strings).
+        extractedStrings = emptyMap()
+        translatedStrings = emptyMap()
         binding.tvJarName.text = jarName
+        binding.tvStatus.text = "Picked: $jarName — extract to start"
         binding.btnExtract.isEnabled = true
+        binding.btnTranslate.isEnabled = false
+        binding.btnPatch.isEnabled = false
         binding.cardJar.visibility = View.VISIBLE
     }
 
@@ -273,8 +282,12 @@ class MainActivity : AppCompatActivity() {
                 // re-patching cleanly overwrites the previous output.
                 val outDir = outputDir()
                 val jarFile = File(File(cacheDir, "extract"), jarName)
-                val outJar = File(outDir,
-                    jarName.replace(".jar", "_${langCode()}.jar", ignoreCase = true))
+                // Strip a trailing ".jar" if present; otherwise the
+                // input name is used as-is -- either way the output
+                // always ends with ".jar" so restore/save can find it.
+                val base = if (jarName.endsWith(".jar", ignoreCase = true))
+                    jarName.dropLast(4) else jarName
+                val outJar = File(outDir, "${base}_${langCode()}.jar")
                 jarMod.callAttr("patch_jar",
                     jarFile.absolutePath, toPyDict(py, translatedStrings),
                     outJar.absolutePath)
@@ -382,8 +395,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun copyToCache(uri: Uri, dest: File) {
-        contentResolver.openInputStream(uri)?.use { input ->
-            dest.outputStream().use { output -> input.copyTo(output) }
+        // A null stream must FAIL LOUDLY: silently skipping would leave
+        // a stale file from a previous extract in place and collect
+        // the WRONG jar's strings.
+        val input = contentResolver.openInputStream(uri)
+            ?: throw IllegalStateException("cannot open picked file")
+        input.use {
+            dest.outputStream().use { output -> it.copyTo(output) }
         }
     }
 

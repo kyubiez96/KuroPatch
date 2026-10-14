@@ -19,8 +19,11 @@ _FORMAT_RE = re.compile(
     r"|\{\d+\}"                            # {0}
 )
 
-# Pure numbers (int, float, with separators): 123, 1.5, 1,000
-_NUMBER_RE = re.compile(r"^[\d\s.,_+\-xXa-fA-F]+$")
+# Pure numbers (int, float, with separators): 123, 1.5, 1,000.
+# The (?=.*\d) lookahead requires at least one digit: without it,
+# real words made only of hex letters (DEAD, CAFE, FACE, BEEF, FEED)
+# were misclassified as "numbers" and never translated.
+_NUMBER_RE = re.compile(r"^(?=.*\d)[\d\s.,_+\-xXa-fA-F]+$")
 
 # URLs
 _URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)

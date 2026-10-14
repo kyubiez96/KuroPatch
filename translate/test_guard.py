@@ -35,6 +35,19 @@ class TestShouldSkip(unittest.TestCase):
         skip, _ = should_skip("1,000")
         self.assertTrue(skip)
 
+    def test_hex_letter_words_not_numbers(self):
+        # Real words made only of hex letters must NOT be skipped as
+        # "numbers" (regression: DEAD/CAFE/FACE were skipped).
+        for t in ["DEAD", "CAFE", "FACE", "DECAF", "FACADE", "BEEF",
+                  "FEED", "DEFACE", "Dead", "Cafe"]:
+            skip, reason = should_skip(t)
+            self.assertFalse(skip, t)
+            self.assertEqual(reason, "", t)
+        # ...while real numbers (incl. hex with a digit) still skip.
+        for t in ["123", "1,000", "0x1F", "A1", "FF00"]:
+            skip, _ = should_skip(t)
+            self.assertTrue(skip, t)
+
     def test_tags_only_skipped(self):
         skip, _ = should_skip("<b></b>")
         self.assertTrue(skip)

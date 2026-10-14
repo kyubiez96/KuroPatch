@@ -29,9 +29,19 @@ class ValidationResult:
 
 
 def validate(source, translation):
-    """Check placeholder integrity of a translation."""
-    src = Counter(extract_placeholders(source))
-    dst = Counter(extract_placeholders(translation))
+    """Check placeholder integrity of a translation.
+
+    Placeholders must survive in the same ORDER as well as the same
+    multiplicity: "%1$s killed %2$d" translated as "%2$d membunuh %1$s"
+    has the right multiset but the wrong meaning -- the killer and the
+    victim are swapped. Ordered comparison catches that.
+    """
+    src_list = extract_placeholders(source)
+    dst_list = extract_placeholders(translation)
+    if src_list == dst_list:
+        return ValidationResult(ok=True)
+    src = Counter(src_list)
+    dst = Counter(dst_list)
     missing = []
     extra = []
     for ph, count in src.items():
@@ -40,5 +50,8 @@ def validate(source, translation):
     for ph, count in dst.items():
         if count > src.get(ph, 0):
             extra.extend([ph] * (count - src.get(ph, 0)))
-    return ValidationResult(ok=not missing and not extra,
-                            missing=missing, extra=extra)
+    if not missing and not extra:
+        # Same multiset, wrong order -- report as missing/extra pair
+        # so the caller still gets a non-empty reason.
+        missing = ["<order>"]
+    return ValidationResult(ok=False, missing=missing, extra=extra)

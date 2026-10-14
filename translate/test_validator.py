@@ -34,6 +34,13 @@ class TestValidate(unittest.TestCase):
         r = validate("%1$s killed %2$d", "%1$s membunuh")
         self.assertFalse(r)
 
+    def test_swapped_order_rejected(self):
+        # Same multiset, wrong order: killer/victim swapped. Must fail.
+        r = validate("%1$s killed %2$d", "%2$d membunuh %1$s")
+        self.assertFalse(r)
+        r = validate("Give %d to %s", "Beri %s ke %d")
+        self.assertFalse(r)
+
 
 if __name__ == "__main__":
     unittest.main()
