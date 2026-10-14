@@ -94,7 +94,13 @@ def parse_resource(raw: bytes) -> List[StringPack]:
                 raise ValueError(
                     f"string {i} has no NUL terminator (pack at {pos}, offset {start})"
                 ) from None
-            strings.append(data[start:end].decode("utf-8", errors="replace"))
+            # surrogateescape (NOT errors="replace"): a pack string with
+            # malformed UTF-8 bytes must round-trip losslessly. "replace"
+            # turned those bytes into U+FFFD on rebuild even when the
+            # string was never translated -- the game saw different
+            # bytes for a string it used to read. The encode side in
+            # build_resource uses surrogateescape too.
+            strings.append(data[start:end].decode("utf-8", errors="surrogateescape"))
         packs.append(StringPack(es=es, strings=strings))
         # Advance past the string data.
         maxend = sbase
@@ -123,7 +129,11 @@ def build_resource(packs: List[StringPack]) -> bytes:
         table = bytearray()
         strdata = bytearray()
         for text in pack.strings:
-            encoded = text.encode("utf-8") + b"\x00"
+            # surrogateescape: lone surrogates from parse_resource
+            # (malformed-UTF-8 bytes in the original pack) re-encode
+            # to the exact original bytes. Plain .encode("utf-8")
+            # would raise UnicodeEncodeError on them.
+            encoded = text.encode("utf-8", errors="surrogateescape") + b"\x00"
             if len(strdata) + len(encoded) > limit:
                 raise ValueError(
                     f"string data ({len(strdata) + len(encoded)} bytes) exceeds "

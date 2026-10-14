@@ -39,7 +39,12 @@ __all__ = [
 ]
 
 # Characters that may appear literally in a properties key.
-_KEY_RE = re.compile(r"^(?P<lead>[ \t\f]*)(?P<key>(?:[^=:\s]|\\.)+)[ \t\f]*(?P<sep>[=:])(?P<mid>[ \t\f]*)(?P<rest>.*)$")
+# The key group MUST try the escape alternative FIRST (\\.) and
+# exclude backslash from the plain class: with [^=:\s] matching the
+# backslash itself, "my\=key=Hello" parsed as key "my\", value
+# "key=Hello" (the escape was swallowed before \\. could match it).
+# Order matters: (?:\\.|[^=:\\\s])+ parses "my\=key" as one key.
+_KEY_RE = re.compile(r"^(?P<lead>[ \t\f]*)(?P<key>(?:\\.|[^=:\\\s])+)[ \t\f]*(?P<sep>[=:])(?P<mid>[ \t\f]*)(?P<rest>.*)$")
 
 _ESCAPES = {
     "n": "\n",
@@ -95,7 +100,7 @@ def _needs_backslash(char: str) -> bool:
     return char in _VALUE_SPECIAL
 
 
-def escape_value(text: str, charset: str = "utf-8") -> str:
+def escape_value(text: str, charset: str = "utf-8", key: bool = False) -> str:
     """Escape real text so it can be stored as a ``.properties`` value.
 
     ``charset`` decides how characters are represented: anything the charset
@@ -105,6 +110,11 @@ def escape_value(text: str, charset: str = "utf-8") -> str:
     Every character in the leading whitespace run is escaped, not just the first
     one: ``Properties.load`` skips whitespace after the separator, so escaping
     only the first space would silently drop the rest.
+
+    With ``key=True`` the text is a KEY, not a value: ``=``, ``:`` and
+    interior spaces are also backslash-escaped (in a value they are
+    harmless; in a key the parser treats them as separators /
+    whitespace, so writing them bare silently changes the key).
     """
     out: List[str] = []
     in_leading = True
@@ -151,10 +161,27 @@ def escape_value(text: str, charset: str = "utf-8") -> str:
             piece = "\\" + piece
         elif char not in " ":
             in_leading = False
+        # Key-only escapes: in a KEY, "=" / ":" end the key and an
+        # interior space terminates the key match -- all three must be
+        # backslash-escaped. (Leading spaces were already prefixed
+        # above; `not in_leading` keeps them from being prefixed twice.)
+        if key and char in "=:":
+            piece = "\\" + piece
+        elif key and char == " " and not in_leading:
+            piece = "\\" + piece
 
         out.append(piece)
 
     return "".join(out)
+
+
+def escape_key(text: str, charset: str = "utf-8") -> str:
+    """Escape real text so it can be stored as a ``.properties`` KEY.
+
+    Like :func:`escape_value`, plus the key-only escapes (``=``, ``:``,
+    interior space). Round-trips through :func:`unescape`.
+    """
+    return escape_value(text, charset, key=True)
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +223,7 @@ class PropertiesEntry:
 
     @property
     def escaped_key(self) -> str:
-        return escape_value(self.key)
+        return escape_key(self.key)
 
     def escaped_key_with(self, charset: str = "utf-8") -> str:
         """Key escaped for the file's write charset.
@@ -206,7 +233,7 @@ class PropertiesEntry:
         raw would make to_bytes() raise UnicodeEncodeError on the
         strict ASCII encode.
         """
-        return escape_value(self.key, charset)
+        return escape_key(self.key, charset)
 
     @property
     def escaped_value(self) -> str:
@@ -703,8 +730,13 @@ def _sanitize_manifest(data: bytes) -> bytes:
     ``MicroEdition-*`` attributes that J2ME loaders need to recognise the
     game are preserved — stripping the whole manifest produced JARs that
     J2ME Loader refused to open ("JAR not have META-INF/MANIFEST.MF").
+
+    Decoding uses ``surrogateescape`` (NOT ``errors="replace"``): a
+    Latin-1 (or otherwise non-UTF-8) manifest must round-trip its
+    non-ASCII bytes losslessly. ``replace`` turned e.g. ``Pok\\xe9mon``
+    in ``MIDlet-Name`` into ``Pok\\uFFFDon`` (mojibake) on every rebuild.
     """
-    text = data.decode("utf-8", errors="replace")
+    text = data.decode("utf-8", errors="surrogateescape")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     out_sections: List[List[str]] = []
     for section in text.split("\n\n"):
@@ -728,7 +760,9 @@ def _sanitize_manifest(data: bytes) -> bytes:
         if cleaned:
             out_sections.append(cleaned)
     body = "\r\n\r\n".join("\r\n".join(sec) for sec in out_sections)
-    return (body + "\r\n").encode("utf-8")
+    # surrogateescape: lone surrogates re-encode to the exact original
+    # bytes -- a non-UTF-8 manifest round-trips losslessly.
+    return (body + "\r\n").encode("utf-8", errors="surrogateescape")
 
 
 class JarPatcher:
