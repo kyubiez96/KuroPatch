@@ -119,6 +119,7 @@ class MainActivity : AppCompatActivity() {
         extractedStrings = emptyMap()
         translatedStrings = emptyMap()
         translatedLangCode = ""
+        translatedProvider = ""
         // A new pick also invalidates the previous PATCH output:
         // Save / Share must not keep serving jar A's file after the
         // user has moved on to jar B (stale-output bug).
@@ -144,6 +145,10 @@ class MainActivity : AppCompatActivity() {
         binding.btnPickJar.setOnClickListener { launchPicker() }
         binding.btnExtract.setOnClickListener { extractStrings() }
         binding.btnTranslate.setOnClickListener { translateStrings() }
+        // Change-key reuses the first-time prompt: after Save the
+        // prompt hands the new key to Python and continues into
+        // translateStrings() (a no-op when nothing is extracted).
+        binding.btnChangeKey.setOnClickListener { promptAgnesKey() }
         binding.btnPatch.setOnClickListener { patchJar() }
         binding.btnSave.setOnClickListener { launchSaveDialog() }
         binding.btnShare.setOnClickListener { shareOutput() }
@@ -259,10 +264,26 @@ class MainActivity : AppCompatActivity() {
                 // collected value IS the key (matched by value on patch).
                 extractedStrings = stringsMap.keys
                     .associate { it.toString() to it.toString() }
+                // collect_strings may warn (e.g. a TRAD_english.loc
+                // table that exists but is not Castlevania-format):
+                // the user must know story translation was dropped,
+                // not silently see fewer strings. Best-effort: a
+                // failure reading warnings must not fail extraction.
+                val collectWarnings = try {
+                    result.asMap()
+                        .entries.firstOrNull { it.key.toString() == "warnings" }
+                        ?.value?.asList()?.map { it.toString() }.orEmpty()
+                } catch (e: Exception) {
+                    android.util.Log.w("KuroPatch", "collect warnings unreadable", e)
+                    emptyList()
+                }
                 safeUi {
                     setBusy(false)
                     binding.tvStatus.text =
-                        "${extractedStrings.size} strings found"
+                        "${extractedStrings.size} strings found" +
+                        if (collectWarnings.isNotEmpty())
+                            " — " + collectWarnings.joinToString("; ")
+                        else ""
                     binding.btnTranslate.isEnabled = extractedStrings.isNotEmpty()
                     binding.cardStrings.visibility = View.VISIBLE
                 }
@@ -335,6 +356,30 @@ class MainActivity : AppCompatActivity() {
                         // stash for patch step
                         translatedStrings = translated
                         translatedLangCode = langCode()
+                        translatedProvider = providerName()
+                    }
+                    // Stale stash: a failed / no-op re-translate
+                    // (changed == 0) for a DIFFERENT language or
+                    // provider must not leave Patch serving the
+                    // previous translations -- e.g. translate to
+                    // Indonesian, switch provider to Passthrough,
+                    // tap Translate ("0 strings translated"), tap
+                    // Patch, and get the OLD Indonesian jar with no
+                    // hint anything was stale. Drop the stash and
+                    // say so. A same-language/provider failure
+                    // keeps the stash: retrying a dead provider
+                    // must not destroy a good translation.
+                    if (changed == 0 && translatedStrings.isNotEmpty() &&
+                        (langCode() != translatedLangCode ||
+                            providerName() != translatedProvider)) {
+                        translatedStrings = emptyMap()
+                        translatedLangCode = ""
+                        translatedProvider = ""
+                        binding.btnPatch.isEnabled = false
+                        binding.tvStatus.text =
+                            binding.tvStatus.text.toString() +
+                            " — previous translations discarded " +
+                            "(different language/provider)."
                     }
                     // ANY failure must be LOUD, not just total failure:
                     // v2.0.11 Castlevania showed "26 translated, 327
@@ -369,6 +414,11 @@ class MainActivity : AppCompatActivity() {
      * user switches language after translating, patching with the
      * spinner value would mislabel e.g. Indonesian output as _en. */
     private var translatedLangCode: String = ""
+    /** Provider the current translations were made with. Paired
+     * with translatedLangCode for the stale-stash check below:
+     * a failed re-translate for a DIFFERENT language/provider must
+     * not leave Patch serving the previous translations. */
+    private var translatedProvider: String = ""
 
     private fun patchJar() {
         if (translatedStrings.isEmpty()) return
@@ -392,14 +442,46 @@ class MainActivity : AppCompatActivity() {
                 // Filename uses the TRANSLATE-time language, not the
                 // spinner's current value (see translatedLangCode).
                 val outJar = File(outDir, "${base}_${translatedLangCode}.jar")
-                jarMod.callAttr("patch_jar",
+                val statsResult = jarMod.callAttr("patch_jar",
                     jarFile.absolutePath, toPyDict(py, translatedStrings),
                     outJar.absolutePath)
+                // patch_jar's stats must NOT be discarded: a pack
+                // rebuild failure or .loc build failure still
+                // returns "success" (the file is left untouched,
+                // fail-safe) but the user would otherwise see a
+                // bare "Done" with no idea story / pack coverage
+                // was dropped. Read the stats and surface them;
+                // any failure reading stats must not fail the
+                // patch itself, so this is fully best-effort.
+                val statsNote = try {
+                    val stats = statsResult.asMap()
+                        .map { it.key.toString() to it.value }.toMap()
+                    val notes = mutableListOf<String>()
+                    val packsSkipped = stats["packs_skipped"]?.toInt() ?: 0
+                    if (packsSkipped > 0) {
+                        notes += "packs skipped: $packsSkipped " +
+                            "(rebuild failed, left untranslated)"
+                    }
+                    val locError = stats["loc_error"]?.toString().orEmpty()
+                    if (locError.isNotEmpty()) {
+                        notes += ".loc error: $locError"
+                    }
+                    val warnings = stats["warnings"]?.asList()
+                        ?.map { it.toString() }.orEmpty()
+                    if (warnings.isNotEmpty()) {
+                        notes += warnings
+                    }
+                    if (notes.isNotEmpty()) " — " + notes.joinToString("; ") else ""
+                } catch (e: Exception) {
+                    android.util.Log.w("KuroPatch", "patch stats unreadable", e)
+                    ""
+                }
                 safeUi {
                     setBusy(false)
                     patchedJar = outJar
                     binding.tvStatus.text =
-                        "Done: ${outJar.name} (${outJar.length() / 1024} KB) — pick where to save it"
+                        "Done: ${outJar.name} (${outJar.length() / 1024} KB) — pick where to save it" +
+                        statsNote
                     binding.btnSave.isEnabled = true
                     binding.btnShare.isEnabled = true
                     // Open the save dialog right away: this IS the
@@ -560,6 +642,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnPickJar.isEnabled = !busy
         binding.btnExtract.isEnabled = !busy && jarUri != null
         binding.btnTranslate.isEnabled = !busy && extractedStrings.isNotEmpty()
+        binding.btnChangeKey.isEnabled = !busy
         binding.btnPatch.isEnabled = !busy && translatedStrings.isNotEmpty()
         val hasOutput = patchedJar?.exists() == true
         binding.btnSave.isEnabled = !busy && hasOutput

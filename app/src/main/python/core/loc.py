@@ -325,6 +325,18 @@ def validate(translated: list, original: list) -> None:
             )
         if "\x00" in new:
             problems.append("record %d contains NUL" % i)
+        # C0 control chars other than \n / \t: a provider emitting
+        # \r\n line endings would otherwise pass (\n count matches)
+        # and the renderer may draw \r as a garbage/blank glyph.
+        # Same class of hole the NUL check closes.
+        bad_controls = sorted(
+            {c for c in new if ord(c) < 0x20 and c not in ("\n", "\t")}
+        )
+        if bad_controls:
+            problems.append(
+                "record %d contains control chars %r "
+                "(only \\n and \\t allowed)" % (i, bad_controls)
+            )
         if _dollar_positions(new) != _dollar_positions(old):
             problems.append("record %d $N code positions changed" % i)
         for tok in new.split():

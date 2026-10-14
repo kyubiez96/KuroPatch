@@ -300,12 +300,17 @@ def collect_strings(jar_path, minimum=3, translate_all=False, workspace=None):
 
     Returns ``{"strings": {value: [origins]}, "total_seen": n,
     "files": {"properties": n, "smali": n, "classes": n, "packs": n,
-    "loc": n}}``.
+    "loc": n}, "warnings": [...]}``. ``warnings`` lists resources
+    that were skipped with a reason (currently: a ``TRAD_english.loc``
+    table that exists but is not a Castlevania-format table -- the
+    user must know story translation was dropped, not silently see
+    fewer strings).
     """
     tmp = workspace or tempfile.mkdtemp(prefix="kpatch-collect-")
     patcher = JarPatcher(jar_path, workspace=tmp)
     strings = {}
     total_seen = 0
+    warnings = []
     counts = {"properties": 0, "smali": 0, "classes": 0, "packs": 0,
               "loc": 0}
 
@@ -385,12 +390,23 @@ def collect_strings(jar_path, minimum=3, translate_all=False, workspace=None):
             for filename in files:
                 ws_path = os.path.join(root, filename)
                 rel = os.path.relpath(ws_path, patcher.workspace).replace(os.sep, "/")
-                if rel.lower() != "trad_english.loc":
+                # Basename match (like string packs): a game storing
+                # the table nested (res/TRAD_english.loc) must be
+                # collected, not silently skipped for living in a
+                # subdirectory. TRAD.lang is still never collected
+                # (different name -- it is the language lookup index).
+                if rel.rsplit("/", 1)[-1].lower() != "trad_english.loc":
                     continue
                 try:
                     with open(ws_path, "rb") as fh:
                         records = parse_loc(fh.read())
-                except (OSError, ValueError):
+                except (OSError, ValueError) as exc:
+                    # Surface, don't swallow: a table that exists but
+                    # is not Castlevania-format (different skip/count)
+                    # means story translation was dropped -- the user
+                    # must know, not silently see fewer strings.
+                    warnings.append(
+                        "%s: .loc table skipped (%s)" % (rel, exc))
                     continue
                 counts["loc"] += 1
                 for i, value in enumerate(records):
@@ -406,7 +422,8 @@ def collect_strings(jar_path, minimum=3, translate_all=False, workspace=None):
                 if strings.pop(k, None) is not None:
                     dropped_keys += 1
         return {"strings": strings, "total_seen": total_seen,
-                "files": counts, "data_keys_dropped": dropped_keys}
+                "files": counts, "data_keys_dropped": dropped_keys,
+                "warnings": warnings}
     finally:
         if workspace is None:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -486,10 +503,14 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
     Translations are matched by decoded source value across .properties,
     smali literals, .class constant pools, string packs and the English
     .loc table. Returns a stats dict: {"properties": n, "smali": n,
-    "classes": n, "packs": n, "loc": n, "loc_reverted": n, "out": out_path}.
+    "classes": n, "packs": n, "loc": n, "loc_reverted": n,
+    "packs_skipped": n, "warnings": [...], "out": out_path}.
     "loc_reverted" counts .loc records whose translation failed
     .loc validation and was reverted to the source string (fail-closed,
-    per record).
+    per record). "packs_skipped" counts pack FILES whose rebuild failed
+    (left untouched, not counted as replaced). "warnings" lists
+    resources skipped with a reason (currently: a TRAD_english.loc
+    table that exists but is not a Castlevania-format table).
     """
     translations = _coerce_str_dict(translations)
     if not translations:
@@ -515,7 +536,8 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
     tmp = workspace or tempfile.mkdtemp(prefix="kpatch-patch-")
     patcher = JarPatcher(jar_path, workspace=tmp)
     stats = {"properties": 0, "smali": 0, "classes": 0, "packs": 0,
-             "loc": 0, "loc_reverted": 0}
+             "loc": 0, "loc_reverted": 0, "packs_skipped": 0,
+             "warnings": []}
     try:
         patcher.extract()
         for path in patcher.get_properties_files():
@@ -583,6 +605,10 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
                     try:
                         rebuilt = build_resource(packs)
                     except ValueError:
+                        # Failed build leaves the file untouched --
+                        # count it as skipped so the UI can say so
+                        # instead of silently dropping coverage.
+                        stats["packs_skipped"] += 1
                         continue
                     # Only count after the rebuild succeeded -- a failed
                     # build leaves the file untouched, so the stats must
@@ -598,12 +624,18 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
             for filename in files:
                 ws_path = os.path.join(root, filename)
                 rel = os.path.relpath(ws_path, patcher.workspace).replace(os.sep, "/")
-                if rel.lower() != "trad_english.loc":
+                # Basename match (like string packs) -- see collect.
+                if rel.rsplit("/", 1)[-1].lower() != "trad_english.loc":
                     continue
                 try:
                     with open(ws_path, "rb") as fh:
                         original = parse_loc(fh.read())
-                except (OSError, ValueError):
+                except (OSError, ValueError) as exc:
+                    # Surface, don't swallow (see collect): a table
+                    # that exists but is not Castlevania-format means
+                    # story translation was dropped for this jar.
+                    stats["warnings"].append(
+                        "%s: .loc table skipped (%s)" % (rel, exc))
                     continue
                 new_records = list(original)
                 changed = []

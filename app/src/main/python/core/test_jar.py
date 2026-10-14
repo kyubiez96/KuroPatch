@@ -1083,5 +1083,154 @@ class TestReverseLanguageNames(unittest.TestCase):
 
 
 
+class TestAuditCoreKotlinFixes(unittest.TestCase):
+    """Luna audit (2026-10-14): 10 findings, core + Kotlin + workflows.
+
+    Kotlin findings (change-key button, stale-stash drop, patch-stats
+    display) have no Python unit test -- the CI Gradle build proves
+    they compile. The workflow gate (release needs [build, test]) is
+    verified by YAML parse + the CI run itself. Everything below is
+    the Python-side regression coverage.
+    """
+
+    def test_properties_escaped_separator_keys_parse(self):
+        # MED #2: "my\=key=Hello" used to parse as key "my\",
+        # value "key=Hello" -- the escape was swallowed before \\.
+        # could match it. Escaped ":" and escaped space likewise.
+        from core.patcher import PropertiesFile
+        data = (b"my\\=key=Hello\nmy\\:key=Hi\nmy\\ key=World\n"
+                b"plain=Plain\n")
+        pf = PropertiesFile.loads(data)
+        self.assertEqual([e.key for e in pf.entries],
+                         ["my=key", "my:key", "my key", "plain"])
+        self.assertEqual([e.value for e in pf.entries],
+                         ["Hello", "Hi", "World", "Plain"])
+
+    def test_properties_escaped_separator_keys_round_trip(self):
+        # MED #2 (render side): keys must re-escape =, :, space on
+        # write, or the next parse corrupts them again.
+        from core.patcher import PropertiesFile
+        data = b"my\\=key=Hello\nmy\\ key=World\n"
+        pf = PropertiesFile.loads(data)
+        pf.entries[0].value = "Hello ID"
+        pf.entries[1].value = "Dunia Baru"
+        pf2 = PropertiesFile.loads(pf.to_bytes())
+        self.assertEqual([(e.key, e.value) for e in pf2.entries],
+                         [("my=key", "Hello ID"), ("my key", "Dunia Baru")])
+
+    def test_escape_key_round_trip(self):
+        # MED #2: escape_key/unescape must round-trip nasty keys.
+        from core.patcher import escape_key, unescape
+        for key in ["my=key", "my:key", "my key", "a b=c:d", " lead",
+                    "trail ", "back\\slash", "a#b", "tab\there"]:
+            self.assertEqual(unescape(escape_key(key)), key)
+
+    def test_manifest_latin1_preserved(self):
+        # LOW #5: _sanitize_manifest decoded with errors="replace",
+        # turning Latin-1 "Pok\xe9mon" into "Pok\uFFFDon" (mojibake)
+        # on every rebuild. surrogateescape must round-trip it.
+        from core.patcher import _sanitize_manifest
+        data = (b"Manifest-Version: 1.0\r\nMIDlet-Name: Pok\xe9mon\r\n"
+                b"MIDlet-Version: 1.0\r\n")
+        out = _sanitize_manifest(data)
+        self.assertEqual(out, data)
+        self.assertIn(b"Pok\xe9mon", out)
+        self.assertNotIn(b"\xef\xbf\xbd", out)  # no U+FFFD
+        # Digest sections are still stripped, Latin-1 main kept.
+        data2 = (data + b"\r\nName: Game.class\r\n"
+                 b"SHA1-Digest: abcdef==\r\n\r\n")
+        out2 = _sanitize_manifest(data2)
+        self.assertIn(b"Pok\xe9mon", out2)
+        self.assertNotIn(b"Name: Game.class", out2)
+        self.assertNotIn(b"SHA1-Digest", out2)
+
+    def test_stringpack_malformed_utf8_round_trip(self):
+        # LOW #8: parse_resource decoded with errors="replace", so a
+        # malformed-UTF-8 string shipped as U+FFFD bytes even when
+        # never translated. surrogateescape must round-trip it.
+        import lzma
+        from core.stringpacks import build_resource, parse_resource
+        raw = (b"\x01\x02\x00\x03" + b"\xff\xfe\x00" + b"Hello\x00")
+        blob = lzma.compress(raw, format=lzma.FORMAT_ALONE)
+        packs = parse_resource(blob)
+        self.assertEqual(packs[0].strings[0], "\udcff\udcfe")
+        rebuilt = build_resource(packs)
+        dec = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
+        self.assertEqual(dec.decompress(rebuilt), raw)
+        # Translating a NEIGHBOUR string must not corrupt the bad one.
+        packs[0].strings[1] = "Halo"
+        rebuilt2 = build_resource(packs)
+        dec2 = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
+        self.assertEqual(parse_resource(rebuilt2)[0].strings,
+                         ["\udcff\udcfe", "Halo"])
+        self.assertIn(b"\xff\xfe\x00", dec2.decompress(rebuilt2))
+
+    def test_loc_nested_directory_collected_and_patched(self):
+        # LOW #6: .loc was matched at jar root only; a game with
+        # res/TRAD_english.loc got its story strings silently skipped.
+        from core import jar as jar_mod
+        from core import loc as loc_mod
+        records = ["0"] + ["Record %d here" % i for i in range(1, 400)]
+        table = loc_mod.build(records)
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "game.jar")
+            out = os.path.join(td, "out.jar")
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("res/TRAD_english.loc", table)
+            got = jar_mod.collect_strings(src)
+            self.assertIn("Record 2 here", got["strings"])
+            self.assertIn("res/TRAD_english.loc::loc#2",
+                          got["strings"]["Record 2 here"])
+            self.assertEqual(got["warnings"], [])
+            stats = jar_mod.patch_jar(
+                src, {"Record 2 here": "Catatan 2 di sini"}, out)
+            self.assertEqual(stats["warnings"], [])
+            with zipfile.ZipFile(out) as z:
+                patched = loc_mod.parse(z.read("res/TRAD_english.loc"))
+            self.assertEqual(patched[2], "Catatan 2 di sini")
+
+    def test_loc_non_castlevania_table_warns(self):
+        # LOW #7: a .loc table that exists but is not
+        # Castlevania-format (wrong skip/count) was silently skipped.
+        # Collect + patch must surface a warning naming the file.
+        from core import jar as jar_mod
+        bad = struct.pack(">II", 999, 400) + b"\x00" * 64
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "game.jar")
+            out = os.path.join(td, "out.jar")
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("TRAD_english.loc", bad)
+                z.writestr("a.properties", "greet=Hello Player\n")
+            got = jar_mod.collect_strings(src)
+            self.assertTrue(any("TRAD_english.loc" in w
+                                for w in got["warnings"]))
+            self.assertIn("Hello Player", got["strings"])
+            stats = jar_mod.patch_jar(
+                src, {"Hello Player": "Halo Pemain"}, out)
+            self.assertTrue(any("TRAD_english.loc" in w
+                                for w in stats["warnings"]))
+            with zipfile.ZipFile(out) as z:
+                self.assertEqual(z.read("TRAD_english.loc"), bad)
+                self.assertIn(b"Halo Pemain", z.read("a.properties"))
+
+    def test_pack_build_failure_counted_as_skipped(self):
+        # LOW #9 (stats side): a pack rebuild failure must be counted
+        # (packs_skipped) so the UI can report dropped coverage --
+        # not just silently leave the file untouched.
+        from core.stringpacks import StringPack, build_resource
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "in.jar")
+            resource = build_resource(
+                [StringPack(es=1, strings=["Hello", "World"])])
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("RES_STRINGS", resource)
+            out = os.path.join(td, "out.jar")
+            stats = jar_mod.patch_jar(src, {"Hello": "X" * 300}, out)
+            self.assertEqual(stats["packs"], 0)
+            self.assertEqual(stats["packs_skipped"], 1)
+            with zipfile.ZipFile(out) as z:
+                self.assertEqual(z.read("RES_STRINGS"), resource)
+
+
 if __name__ == "__main__":
     unittest.main()

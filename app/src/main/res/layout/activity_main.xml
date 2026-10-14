@@ -136,6 +136,20 @@
             app:backgroundTint="#5B9DFF"
             android:layout_marginBottom="12dp" />
 
+        <!-- Change the saved Agnes API key. Without this, a saved key
+             (e.g. pasted with a typo) could never be replaced from
+             the app: translate would fail 401 forever until
+             clear-data / reinstall. Opens the same prompt as the
+             first-time flow. -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnChangeKey"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Change API key"
+            app:cornerRadius="14dp"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_marginBottom="12dp" />
+
         <!-- Patch -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnPatch"

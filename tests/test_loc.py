@@ -277,5 +277,42 @@ class TestLocValidate(unittest.TestCase):
             loc_mod.validate(new, orig)
 
 
+class TestLocValidateControlChars(unittest.TestCase):
+    """Luna audit LOW #10: validate() rejected NUL but not \\r / other
+    C0 control chars -- a provider emitting \\r\\n passed validation
+    (\\n count matches) and the renderer may draw \\r as garbage.
+    Fabricated 400-record tables (no Castlevania jar needed)."""
+
+    def _orig(self):
+        return ["0"] + ["Record %d here" % i for i in range(1, 400)]
+
+    def test_rejects_cr(self):
+        orig = self._orig()
+        new = list(orig)
+        new[2] = "Hello\rworld"
+        with self.assertRaisesRegex(ValueError, "control"):
+            loc_mod.validate(new, orig)
+
+    def test_rejects_bel(self):
+        orig = self._orig()
+        new = list(orig)
+        new[2] = "Hello\x07world"
+        with self.assertRaisesRegex(ValueError, "control"):
+            loc_mod.validate(new, orig)
+
+    def test_accepts_tab(self):
+        orig = self._orig()
+        new = list(orig)
+        new[2] = "Hello\tworld"
+        loc_mod.validate(new, orig)  # must not raise
+
+    def test_accepts_matching_newlines(self):
+        orig = self._orig()
+        orig[2] = "Line1\nLine2"
+        new = list(orig)
+        new[2] = "Baris1\nBaris2"
+        loc_mod.validate(new, orig)  # must not raise
+
+
 if __name__ == "__main__":
     unittest.main()
