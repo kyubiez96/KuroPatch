@@ -252,6 +252,21 @@ class TestJarPipeline(unittest.TestCase):
             with open(jar, "rb") as fh:
                 self.assertEqual(fh.read(), before)
 
+    def test_rebuild_refuses_symlink_alias(self):
+        # Round-2 audit: the same-file check used abspath, so a
+        # symlinked alias of the input (link.jar -> real.jar) slipped
+        # through and truncated the source. realpath catches it.
+        with tempfile.TemporaryDirectory() as tmp:
+            jar = _make_fixture(tmp)
+            link = os.path.join(tmp, "link.jar")
+            os.symlink(jar, link)
+            with open(jar, "rb") as fh:
+                before = fh.read()
+            with self.assertRaises(ValueError):
+                jar_mod.patch_jar(link, {"Quit": "Keluar"}, jar)
+            with open(jar, "rb") as fh:
+                self.assertEqual(fh.read(), before)
+
     def test_class_oversize_translation_skipped(self):
         # A translation encoding to >65535 bytes cannot fit a Utf8
         # length field -- skip it (leave source) instead of OverflowError.

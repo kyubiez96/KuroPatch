@@ -109,10 +109,21 @@ class TestShouldSkip(unittest.TestCase):
                           ("com/game/Main", "file-path"),
                           ("a/b/c", "file-path"),
                           ("a/b", "identifier"),
+                          ("A/B", "identifier"),
                           ("menu_start", "identifier")]:
             skip, got = should_skip(t)
             self.assertTrue(skip, t)
             self.assertEqual(got, reason, t)
+
+    def test_all_caps_slash_labels_not_paths(self):
+        # Round-2 audit: ALL-CAPS pairs (ON/OFF, YES/NO, WIN/LOSE) are
+        # toggle labels in games -- the Capitalized-only exemption let
+        # them fall through to the identifier rule and skip translation.
+        # Mixed case (On/OFF) is exempt too; lowercase stays skipped.
+        for t in ["ON/OFF", "YES/NO", "WIN/LOSE", "On/OFF", "ON/Off"]:
+            skip, reason = should_skip(t)
+            self.assertFalse(skip, t)
+            self.assertEqual(reason, "", t)
 
 
 class TestExtractPlaceholders(unittest.TestCase):

@@ -1,4 +1,5 @@
 """Tests for glossary and cache."""
+import json
 import os
 import tempfile
 import unittest
@@ -127,6 +128,25 @@ class TestCache(unittest.TestCase):
                 c = TranslationCache(p)
                 self.assertEqual(len(c), 0)
                 self.assertIsNone(c.get("hi", "en", "id", "agnes"))
+
+    def test_non_string_value_is_miss(self):
+        # Round-2 audit: a non-string value under a valid key (corrupt /
+        # hand-edited cache) used to come back as a "cached" translation
+        # -- garbage patched into the game (or a TypeError in patch).
+        # It must be treated as a miss.
+        from cache import _key
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.json")
+            with open(p, "w") as fh:
+                json.dump({
+                    _key("Hello", "en", "id", "agnes"): ["not", "a", "string"],
+                    _key("World", "en", "id", "agnes"): 42,
+                    _key("Good", "en", "id", "agnes"): "Bagus",
+                }, fh)
+            c = TranslationCache(p)
+            self.assertIsNone(c.get("Hello", "en", "id", "agnes"))
+            self.assertIsNone(c.get("World", "en", "id", "agnes"))
+            self.assertEqual(c.get("Good", "en", "id", "agnes"), "Bagus")
 
 
 if __name__ == "__main__":

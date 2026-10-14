@@ -133,8 +133,13 @@ _IDENT_CHARS_RE = re.compile(r"[_.$/\-:]")
 
 # "Capitalized/Capitalized" (Save/Load, Yes/No, On/Off) is a UI label
 # pair, not a path or identifier -- it must reach the translator.
-# Lowercase "a/b", "res/x" and multi-slash "a/b/c" stay identifiers.
-_SLASH_LABEL_RE = re.compile(r"^[A-Z][a-z]+/[A-Z][a-z]+$")
+# Each segment may independently be Capitalized or ALL-CAPS (ON/OFF,
+# YES/NO, WIN/LOSE are toggle labels in games). Lowercase "a/b",
+# "res/x" and single letters "A/B" stay identifiers: the all-caps
+# alternative requires 2+ letters per segment.
+_SLASH_LABEL_RE = re.compile(
+    r"^(?:[A-Z][a-z]+|[A-Z]{2,})/(?:[A-Z][a-z]+|[A-Z]{2,})$"
+)
 
 # CJK exemption: a single CJK char is already meaningful ("剑").
 _CJK_RE = re.compile(r"[\u2e80-\u9fff]")

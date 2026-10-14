@@ -822,13 +822,15 @@ class JarPatcher:
         """Write a patched archive, preserving the original entry layout."""
         if not output_name:
             raise ValueError("output_name is required")
-        output_path = os.path.abspath(output_name)
+        output_path = os.path.realpath(output_name)
         # NEVER overwrite the input: opening the output for writing
         # truncates the file while the source ZipFile still needs it --
         # directory entries (read back from the source) would then hit a
         # truncated central directory (BadZipFile) and the input would be
         # left as a 22-byte empty zip. Refuse loudly instead.
-        if output_path == os.path.abspath(self.jar_path):
+        # realpath (not abspath): a symlinked alias of the input
+        # (link.jar -> real.jar) must be caught too.
+        if output_path == os.path.realpath(self.jar_path):
             raise ValueError(
                 "output must differ from input -- refusing to overwrite "
                 f"the source archive: {output_path}"

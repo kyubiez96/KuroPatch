@@ -41,7 +41,13 @@ class TranslationCache:
                 self._data = {}
 
     def get(self, text, source_lang, target_lang, provider_name):
-        return self._data.get(_key(text, source_lang, target_lang, provider_name))
+        value = self._data.get(
+            _key(text, source_lang, target_lang, provider_name))
+        # A hand-edited / corrupt cache file may hold a non-string value
+        # (list, number, ...) under a valid key -- handing it back would
+        # patch a game string with garbage (or crash the patch step).
+        # Treat it as a cache miss, not a translation.
+        return value if isinstance(value, str) else None
 
     def put(self, text, source_lang, target_lang, provider_name, translation):
         self._data[_key(text, source_lang, target_lang, provider_name)] = translation
