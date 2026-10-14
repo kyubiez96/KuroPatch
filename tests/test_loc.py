@@ -212,11 +212,58 @@ class TestLocValidate(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-ASCII"):
             loc_mod.validate(new, orig)
 
-    def test_rejects_overlong_line(self):
+    def test_rejects_unwrappable_token(self):
+        # The renderer word-wraps into a char[256] buffer, so a single
+        # whitespace-free token > 256 chars cannot be wrapped. (A
+        # per-\n-line cap is WRONG: shipped PT story line is 399 chars.)
         orig = _english()
         new = list(orig)
-        new[63] = "x" * 237  # single line, over the 236 cap, no \n change issue
-        with self.assertRaisesRegex(ValueError, "chars"):
+        lines = ["pendek"] * 7  # same \n count (6) as the story record
+        lines[0] = "x" * 257  # one unwrappable token
+        new[63] = "\n".join(lines)
+        with self.assertRaisesRegex(ValueError, "unwrappable token"):
+            loc_mod.validate(new, orig)
+
+    def test_accepts_long_wrappable_line(self):
+        # Shipped PT story line is 399 chars and the game wraps it fine:
+        # a long line of SHORT tokens must be accepted.
+        orig = _english()
+        new = list(orig)
+        lines = ["pendek"] * 7  # same \n count (6)
+        lines[0] = ("kata " * 60).strip()  # ~300-char line, short tokens
+        new[63] = "\n".join(lines)
+        loc_mod.validate(new, orig)  # must not raise
+
+    def test_accepts_preserved_original_non_ascii(self):
+        # rec68 credits keep person name "Aurélien Seguin" (non-ASCII,
+        # ORIGINAL). Translating the role label while keeping the name
+        # must be accepted — only NEW non-ASCII is rejected.
+        orig = _english()
+        new = list(orig)
+        self.assertIn("Aur\u00e9lien", new[68])
+        new[68] = new[68].replace("Producer", "Produser")
+        loc_mod.validate(new, orig)  # must not raise
+
+    def test_rejects_moved_dollar_code(self):
+        # Same $N sequence, different position (off line-start) —
+        # the renderer consumes codes while laying out lines.
+        import re as _re
+        orig = _english()
+        idx = next(
+            i for i, s in enumerate(orig)
+            if len(set(loc_mod._dollar_codes(s))) >= 2
+            and i not in loc_mod.DO_NOT_TRANSLATE)
+        new = list(orig)
+        new[idx] = _re.sub(r"\$\d", lambda m: "X" + m.group(0),
+                           new[idx], count=1)
+        with self.assertRaisesRegex(ValueError, "positions"):
+            loc_mod.validate(new, orig)
+
+    def test_rejects_nul_byte(self):
+        orig = _english()
+        new = list(orig)
+        new[63] = new[63] + "\x00"
+        with self.assertRaisesRegex(ValueError, "NUL"):
             loc_mod.validate(new, orig)
 
     def test_rejects_oversize_record(self):

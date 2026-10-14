@@ -33,7 +33,10 @@ COUNT = 400
 BASE = 1214  # 8-byte header + 1206 skipped bytes
 HEADER_TAIL = b"\x10\x08\x00\x00"
 MAX_ENCODED = 65535  # u16 length prefix / DataInputStream.readUTF cap
-MAX_LINE_CHARS = 236  # longest original \n-line; renderer uses char[256]
+MAX_TOKEN_CHARS = 256  # renderer word-wraps into a char[256] buffer; a
+# single whitespace-free token longer than that cannot be wrapped.
+# (A per-\n-line cap is WRONG: shipped PT story line is 399 chars.)
+MAX_RECORD_SANITY = 4096  # fail-closed sanity cap; longest shipped is 805
 MAX_RECORDS = 400
 
 # Indices that must stay byte-identical (cross-language identity test:
@@ -258,6 +261,32 @@ def _dollar_codes(text: str) -> list:
     return _DOLLAR_CODE_RE.findall(text)
 
 
+def _dollar_positions(text: str) -> list:
+    """``(line_no, col_in_line)`` of each ``$N`` code.
+
+    Codes must sit at line starts on the same lines as the source —
+    the renderer consumes them while laying out lines, so a code moved
+    off line-start (same sequence, different position) still breaks it.
+    """
+    out = []
+    line = 0
+    col = 0
+    i = 0
+    while i < len(text):
+        if text[i] == "\n":
+            line += 1
+            col = 0
+            i += 1
+        elif text[i] == "$" and i + 1 < len(text) and text[i + 1].isdigit():
+            out.append((line, col))
+            i += 2
+            col += 2
+        else:
+            i += 1
+            col += 1
+    return out
+
+
 def validate(translated: list, original: list) -> None:
     """Validate translated ``.loc`` strings against the original table.
 
@@ -294,17 +323,26 @@ def validate(translated: list, original: list) -> None:
                 "record %d newline count changed (%d -> %d)"
                 % (i, old.count("\n"), new.count("\n"))
             )
-        for j, line in enumerate(new.split("\n")):
-            if len(line) > MAX_LINE_CHARS:
+        if "\x00" in new:
+            problems.append("record %d contains NUL" % i)
+        if _dollar_positions(new) != _dollar_positions(old):
+            problems.append("record %d $N code positions changed" % i)
+        for tok in new.split():
+            if len(tok) > MAX_TOKEN_CHARS:
                 problems.append(
-                    "record %d line %d is %d chars, over the %d cap"
-                    % (i, j, len(line), MAX_LINE_CHARS)
+                    "record %d has a %d-char unwrappable token, over the %d cap"
+                    % (i, len(tok), MAX_TOKEN_CHARS)
                 )
-        if any(ord(c) >= 128 for c in new):
-            bad = sorted({c for c in new if ord(c) >= 128})
+                break
+        new_non_ascii = sorted(
+            {c for c in new if ord(c) >= 128}
+            - {c for c in old if ord(c) >= 128}
+        )
+        if new_non_ascii:
             problems.append(
-                "record %d has non-ASCII chars %r (ASCII-only output required)"
-                % (i, bad)
+                "record %d introduces non-ASCII chars %r "
+                "(translate with ASCII only; preserving original "
+                "non-ASCII such as person names is fine)" % (i, new_non_ascii)
             )
         try:
             encoded_len = len(encode_modified_utf8(new))
@@ -315,6 +353,11 @@ def validate(translated: list, original: list) -> None:
             problems.append(
                 "record %d encodes to %d bytes, over the %d cap"
                 % (i, encoded_len, MAX_ENCODED)
+            )
+        elif encoded_len > MAX_RECORD_SANITY:
+            problems.append(
+                "record %d encodes to %d bytes, over the %d sanity cap"
+                % (i, encoded_len, MAX_RECORD_SANITY)
             )
     if problems:
         raise ValueError("; ".join(problems))
