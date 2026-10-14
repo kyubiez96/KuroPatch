@@ -31,6 +31,30 @@ jobs:
           python3 -m unittest discover -s translate -p "test_*.py"
           python3 -m unittest discover -s tests
 
+      # The SHIPPED code is the mirror under app/src/main/python/, not
+      # the root copies the suites above test. A fix applied to only
+      # one side used to ship silently (drift caught by hand, twice).
+      # This fails the build on any drift.
+      - name: Verify on-device mirrors match root sources
+        run: |
+          diff -r --exclude=__pycache__ translate app/src/main/python/translate
+          diff -r --exclude=__pycache__ --exclude=test_jar.py core app/src/main/python/core
+          diff tests/test_jar.py app/src/main/python/core/test_jar.py
+
+      # v2.0.2 / v2.0.3 / v2.0.5 all shipped with a stale versionName
+      # (tag created before the bump landed). Fail a tag build fast
+      # instead of publishing a mislabeled release.
+      - name: Check versionName matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          name="$(grep -E 'versionName' app/build.gradle | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [ "$name" != "$tag" ]; then
+            echo "::error::versionName ($name) does not match tag ($tag) -- bump versionName before tagging"
+            exit 1
+          fi
+          echo "versionName $name matches tag $tag"
+
   build:
     name: Build APK
     runs-on: ubuntu-latest

@@ -3,7 +3,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- NOTE: no READ_EXTERNAL_STORAGE -- the app reads/writes files
+    <!-- NOTE: no READ_EXTERNAL_STORAGE. The app reads/writes files
       only through the Storage Access Framework (OpenDocument /
       CreateDocument), which needs no storage permission on any API
       level. A declared-but-never-requested permission would only
@@ -22,7 +22,7 @@
             android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
-            <!-- configChanges: rotation must NOT recreate the activity --
+            <!-- configChanges: rotation must NOT recreate the activity.
               all flow state (jarUri, extracted/translated strings) is
               in-memory, and a recreate mid-translate would orphan the
               background thread AND lose the user's progress. -->
