@@ -85,6 +85,13 @@ def translate_strings(strings, target_lang="id", source_lang="en",
                 results.append(TranslateResult(
                     key, text, lang_name, "translated", "glossary-language"))
                 continue
+        # Other hallucination-prone bare strings (day/month names, bare UI
+        # labels): same treatment -- fixed mapping wins over cache/provider.
+        fixed = lookup_fixed(text, target_lang)
+        if fixed is not None:
+            results.append(TranslateResult(
+                key, text, fixed, "translated", "fixed-map"))
+            continue
         if cache is not None:
             hit = cache.get(text, source_lang, target_lang, provider.name)
             if hit is not None:

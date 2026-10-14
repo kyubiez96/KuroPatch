@@ -173,3 +173,36 @@ class TestAgnesProviderKeyHandling(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFixedMapIntegration(unittest.TestCase):
+    def test_fixed_terms_never_hit_provider(self):
+        # Day/month/UI terms must win WITHOUT calling the provider.
+        p = MockProvider()
+        res = translate_strings(
+            {"a": "Monday", "b": "Yes", "c": "January"}, provider=p)
+        d = results_to_dict(res)
+        self.assertEqual(d, {"a": "Senin", "b": "Ya", "c": "Januari"})
+        self.assertEqual(p.calls, [])
+        for r in res:
+            self.assertEqual(r.status, "translated")
+            self.assertEqual(r.detail, "fixed-map")
+
+    def test_fixed_wins_over_stale_cache(self):
+        # A cached mistranslation must never resurface for fixed terms.
+        with tempfile.TemporaryDirectory() as d:
+            cache = TranslationCache(os.path.join(d, "c.json"))
+            cache.put("Monday", "en", "id", "agnes", "WRONG")
+            p = MockProvider()
+            res = translate_strings(
+                {"a": "Monday"}, provider=p, cache=cache)
+            self.assertEqual(res[0].translation, "Senin")
+            self.assertEqual(res[0].detail, "fixed-map")
+            self.assertEqual(p.calls, [])
+
+    def test_fixed_only_for_matching_target(self):
+        p = MockProvider()
+        res = translate_strings(
+            {"a": "Monday"}, provider=p, target_lang="en")
+        self.assertEqual(res[0].translation, "ID:Monday")
+        self.assertEqual(len(p.calls), 1)

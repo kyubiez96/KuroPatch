@@ -263,7 +263,9 @@ class Glossary:
 
 # ---------------------------------------------------------------------------
 # Fixed translations -- exact full-string mappings applied BEFORE the
-# provider call. LLMs hallucinate on short bare strings (observed live:
+# provider call. Language names live in LANGUAGE_NAMES_ID (single source
+# of truth); this table holds the other hallucination-prone categories:
+# day/month names and bare UI labels. LLMs hallucinate on short bare strings (observed live:
 # 'Español' -> 'Jerman', 'English' -> 'Ingris'), so these never reach
 # the provider. Only exact matches (case-insensitive, whitespace-trimmed)
 # apply -- never substring replacement, so sentences are untouched.
@@ -272,65 +274,6 @@ class Glossary:
 # Keys are lowercased source strings; values are the target translation.
 FIXED_TRANSLATIONS = {
     "id": {
-        # Language names (English + native forms -- game locale pickers
-        # list them in their own language).
-        "english": "Inggris",
-        "español": "Spanyol",
-        "spanish": "Spanyol",
-        "français": "Prancis",
-        "french": "Prancis",
-        "deutsch": "Jerman",
-        "german": "Jerman",
-        "italiano": "Italia",
-        "italian": "Italia",
-        "português": "Portugis",
-        "portuguese": "Portugis",
-        "nederlands": "Belanda",
-        "dutch": "Belanda",
-        "русский": "Rusia",
-        "russian": "Rusia",
-        "日本語": "Jepang",
-        "japanese": "Jepang",
-        "한국어": "Korea",
-        "korean": "Korea",
-        "中文": "Mandarin",
-        "chinese": "Mandarin",
-        "العربية": "Arab",
-        "arabic": "Arab",
-        "polski": "Polandia",
-        "polish": "Polandia",
-        "türkçe": "Turki",
-        "turkish": "Turki",
-        "svenska": "Swedia",
-        "swedish": "Swedia",
-        "dansk": "Denmark",
-        "danish": "Denmark",
-        "suomi": "Finlandia",
-        "finnish": "Finlandia",
-        "norsk": "Norwegia",
-        "norwegian": "Norwegia",
-        "čeština": "Ceko",
-        "czech": "Ceko",
-        "magyar": "Hungaria",
-        "hungarian": "Hungaria",
-        "ελληνικά": "Yunani",
-        "greek": "Yunani",
-        "ไทย": "Thailand",
-        "thai": "Thailand",
-        "tiếng việt": "Vietnam",
-        "vietnamese": "Vietnam",
-        "bahasa indonesia": "Indonesia",
-        "indonesian": "Indonesia",
-        "bahasa melayu": "Melayu",
-        "malay": "Melayu",
-        "हिन्दी": "Hindi",
-        "hindi": "Hindi",
-        "українська": "Ukraina",
-        "ukrainian": "Ukraina",
-        "română": "Rumania",
-        "romanian": "Rumania",
-        "català": "Katalan",
-        "catalan": "Katalan",
         # Day names.
         "monday": "Senin",
         "tuesday": "Selasa",
