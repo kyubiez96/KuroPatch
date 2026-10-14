@@ -367,6 +367,21 @@ FIXED_TRANSLATIONS = {
         "high score": "Skor Tertinggi",
         "game over": "Game Over",
         "press start": "Tekan Mulai",
+        # "Select language" in the 6 languages J2ME games ship.
+        # Castlevania v2.0.10: the provider turned FR "CHOIX DE LA
+        # LANGUE" into "PELIHARAN BAHASA" ("peliharaan" = pet).
+        # Fixed map wins over the provider, whole-string only.
+        "select language": "Pilih Bahasa",
+        "choix de la langue": "Pilih Bahasa",
+        "choisir la langue": "Pilih Bahasa",
+        "selecciona el idioma": "Pilih Bahasa",
+        "selección de idioma": "Pilih Bahasa",
+        "seleziona lingua": "Pilih Bahasa",
+        "selezione lingua": "Pilih Bahasa",
+        "sprachauswahl": "Pilih Bahasa",
+        "sprache wählen": "Pilih Bahasa",
+        "selecione o idioma": "Pilih Bahasa",
+        "seleção de idioma": "Pilih Bahasa",
     },
 }
 

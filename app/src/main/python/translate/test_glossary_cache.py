@@ -258,6 +258,21 @@ class TestFixedTranslations(unittest.TestCase):
         from glossary import lookup_fixed
         self.assertIsNone(lookup_fixed("Monday morning"))
         self.assertIsNone(lookup_fixed("Hello"))
+
+    def test_select_language_multilingual(self):
+        # Castlevania v2.0.10: provider turned FR "CHOIX DE LA
+        # LANGUE" into "PELIHARAN BAHASA". Fixed map must win for
+        # the "select language" phrase in all 6 game languages.
+        from glossary import lookup_fixed
+        for phrase in (
+            "SELECT LANGUAGE",
+            "CHOIX DE LA LANGUE",
+            "SELECCIONA EL IDIOMA",
+            "SELEZIONA LINGUA",
+            "SPRACHAUSWAHL",
+            "SELECIONE O IDIOMA",
+        ):
+            self.assertEqual(lookup_fixed(phrase), "Pilih Bahasa")
         self.assertIsNone(lookup_fixed(""))
         self.assertIsNone(lookup_fixed("Yes please"))
 
