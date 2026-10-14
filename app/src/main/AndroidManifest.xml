@@ -2,9 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+
+    <!-- NOTE: no READ_EXTERNAL_STORAGE -- the app reads/writes files
+      only through the Storage Access Framework (OpenDocument /
+      CreateDocument), which needs no storage permission on any API
+      level. A declared-but-never-requested permission would only
+      mislead users in App info. -->
 
     <!-- allowBackup=false: the Agnes BYOK key lives in SharedPreferences
       and must not be swept into the user's cloud backup. -->
@@ -17,7 +20,12 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
+            <!-- configChanges: rotation must NOT recreate the activity --
+              all flow state (jarUri, extracted/translated strings) is
+              in-memory, and a recreate mid-translate would orphan the
+              background thread AND lose the user's progress. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

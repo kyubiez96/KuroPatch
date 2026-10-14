@@ -415,7 +415,15 @@ class PropertiesFile:
             rebuilt.append(physical[index])
             index += 1
 
-        return "".join(rebuilt).encode(self.write_charset, errors="strict")
+        # Preserve a leading UTF-8 BOM: the raw bytes carry it, and a
+        # replacement of the first physical line drops it (render()
+        # has no BOM). The BOM is only a signature, but dropping it
+        # changes bytes for no reason. (Unchanged files return
+        # self.raw early, so this only matters for edited files.)
+        result = "".join(rebuilt).encode(self.write_charset, errors="strict")
+        if self.raw.startswith(b"\xef\xbb\xbf") and not result.startswith(b"\xef\xbb\xbf"):
+            result = b"\xef\xbb\xbf" + result
+        return result
 
     def to_text(self) -> str:
         """The decoded text a Java ``Properties`` reader would see."""
@@ -749,6 +757,12 @@ class JarPatcher:
             self._infos = archive.infolist()
             for info in self._infos:
                 name = info.filename
+                # Empty / "." entry names are meaningless, and writing
+                # one would target the workspace directory itself
+                # (IsADirectoryError) -- a malformed jar must not
+                # crash extraction.
+                if not name or name.strip("/") in ("", "."):
+                    continue
                 target = os.path.realpath(os.path.join(self.workspace, *name.split("/")))
                 if target != root and not target.startswith(root + os.sep):
                     raise ValueError(f"refusing unsafe archive entry: {name!r}")
@@ -872,8 +886,35 @@ class JarPatcher:
                   f"{'...' if len(stripped) > 4 else ''}")
         ordered = [i for i in ordered if not _is_signature(i.filename)]
 
-        with zipfile.ZipFile(self.jar_path, "r") as source, zipfile.ZipFile(
-            output_path, "w", compression=zipfile.ZIP_DEFLATED
+        # Write to a temp sibling, then os.replace: a crash or
+        # disk-full mid-rebuild must never leave a partial zip at
+        # the output path (see atomic publish below).
+        tmp_path = output_path + ".tmp"
+        try:
+            self._rebuild_to(source_path=self.jar_path, tmp_path=tmp_path,
+                             ordered=ordered, skip=skip)
+        except BaseException:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+        # Atomic publish: a crash / disk-full mid-rebuild must never
+        # leave a partial zip at the output path -- the app offers
+        # that path via Save/Share and restoreLastOutput picks up
+        # anything named *.jar in the output dir.
+        os.replace(tmp_path, output_path)
+        print(f"[*] Done! Saved as {output_path}")
+        return output_path
+
+    def _rebuild_to(self, source_path, tmp_path, ordered, skip):
+        """Write the rebuilt archive to tmp_path (internal helper).
+
+        Signature entries are already stripped by rebuild() before
+        calling here; this only writes entries.
+        """
+        with zipfile.ZipFile(source_path, "r") as source, zipfile.ZipFile(
+            tmp_path, "w", compression=zipfile.ZIP_DEFLATED
         ) as target:
             for info in ordered:
                 name = info.filename
@@ -897,9 +938,6 @@ class JarPatcher:
                 if name.upper() == "META-INF/MANIFEST.MF":
                     data = _sanitize_manifest(data)
                 target.writestr(new_info, data)
-
-        print(f"[*] Done! Saved as {output_path}")
-        return output_path
 
     def close(self) -> None:
         if os.path.isdir(self.workspace):

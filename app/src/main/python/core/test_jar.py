@@ -267,6 +267,40 @@ class TestJarPipeline(unittest.TestCase):
             with open(jar, "rb") as fh:
                 self.assertEqual(fh.read(), before)
 
+    def test_rebuild_is_atomic_on_mid_write_failure(self):
+        # Round-3 audit: rebuild wrote directly to the output path,
+        # so a crash / disk-full mid-write left a PARTIAL zip there --
+        # and the app's restoreLastOutput offers any *.jar in the
+        # output dir, so the user could Save/Share a corrupt jar.
+        # Now: write to .tmp + os.replace. A mid-write failure must
+        # leave the previous output byte-identical, with no .tmp left.
+        from core.patcher import JarPatcher
+        with tempfile.TemporaryDirectory() as tmp:
+            jar = _make_fixture(tmp)
+            out = os.path.join(tmp, "out.jar")
+            with open(out, "wb") as fh:
+                fh.write(b"PREVIOUS COMPLETE OUTPUT")
+            ws = os.path.join(tmp, "ws")
+            patcher = JarPatcher(jar, workspace=ws)
+            patcher.extract()
+            orig_writestr = zipfile.ZipFile.writestr
+            def boom(self, *a, **k):
+                raise OSError("simulated disk-full")
+            zipfile.ZipFile.writestr = boom
+            try:
+                with self.assertRaises(OSError):
+                    patcher.rebuild(out)
+            finally:
+                zipfile.ZipFile.writestr = orig_writestr
+            with open(out, "rb") as fh:
+                self.assertEqual(fh.read(), b"PREVIOUS COMPLETE OUTPUT")
+            self.assertFalse(os.path.exists(out + ".tmp"))
+            # And a normal rebuild still works + leaves no .tmp.
+            out2 = os.path.join(tmp, "out2.jar")
+            patcher.rebuild(out2)
+            self.assertTrue(zipfile.is_zipfile(out2))
+            self.assertFalse(os.path.exists(out2 + ".tmp"))
+
     def test_class_oversize_translation_skipped(self):
         # A translation encoding to >65535 bytes cannot fit a Utf8
         # length field -- skip it (leave source) instead of OverflowError.

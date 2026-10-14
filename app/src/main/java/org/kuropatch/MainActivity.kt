@@ -51,6 +51,22 @@ class MainActivity : AppCompatActivity() {
      * Cancel = early return: the file stays in the output dir and
      * Save stays enabled, so the user can retry any time.
      */
+    /**
+     * Post UI work only if the activity is still alive. Background
+     * threads (extract / translate / patch / save) outlive the
+     * activity: on Back-press or rotation the old instance is
+     * destroyed, and showing a dialog on it throws
+     * WindowManager$BadTokenException (a crash). Every UI post
+     * from a background thread must go through here.
+     */
+    private fun safeUi(block: () -> Unit) {
+        if (isFinishing || isDestroyed) return
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            block()
+        }
+    }
+
     private val savePatched = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/java-archive")
     ) { uri ->
@@ -64,13 +80,13 @@ class MainActivity : AppCompatActivity() {
                 contentResolver.openOutputStream(uri)?.use { out ->
                     src.inputStream().use { it.copyTo(out) }
                 } ?: throw IllegalStateException("cannot open output stream")
-                runOnUiThread {
+                safeUi {
                     binding.tvStatus.text =
                         "Saved: ${src.name} (${src.length() / 1024} KB)"
                     Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
-                runOnUiThread {
+                safeUi {
                     showError("Save failed", e.message ?: "unknown error")
                 }
             }
@@ -128,7 +144,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initPython() {
-        if (!Python.isStarted()) Python.start(AndroidPlatform(this))
+        try {
+            if (!Python.isStarted()) Python.start(AndroidPlatform(this))
+        } catch (e: Exception) {
+            // Chaquopy init failure = nothing works. Say so with a
+            // dialog instead of crashing out of onCreate.
+            android.util.Log.e("KuroPatch", "Python.start failed", e)
+            showError("Python failed to start",
+                "KuroPatch cannot run without the Python engine: " +
+                    (e.message ?: "unknown error"))
+            binding.btnPickJar.isEnabled = false
+        }
     }
 
     private fun setupLanguageSpinner() {
@@ -160,7 +186,13 @@ class MainActivity : AppCompatActivity() {
         contentResolver.query(uri, null, null, null, null)?.use { c ->
             if (c.moveToFirst()) {
                 val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (idx >= 0) return c.getString(idx)
+                if (idx >= 0) {
+                    val name = c.getString(idx)
+                    // An empty DISPLAY_NAME is as useless as a null one:
+                    // File(cacheDir, "") is the dir itself, and
+                    // copyToCache would fail on it.
+                    if (!name.isNullOrBlank()) return name
+                }
             }
         }
         return null
@@ -219,7 +251,7 @@ class MainActivity : AppCompatActivity() {
                 // collected value IS the key (matched by value on patch).
                 extractedStrings = stringsMap.keys
                     .associate { it.toString() to it.toString() }
-                runOnUiThread {
+                safeUi {
                     setBusy(false)
                     binding.tvStatus.text =
                         "${extractedStrings.size} strings found"
@@ -227,7 +259,7 @@ class MainActivity : AppCompatActivity() {
                     binding.cardStrings.visibility = View.VISIBLE
                 }
             } catch (e: Exception) {
-                runOnUiThread {
+                safeUi {
                     setBusy(false)
                     showError("Extract failed", e.message ?: "unknown error")
                 }
@@ -245,7 +277,11 @@ class MainActivity : AppCompatActivity() {
         // export BYOK key so Chaquopy Python (os.environ) can read it
         try {
             android.system.Os.setenv("AGNES_API_KEY", getAgnesKey(), true)
-        } catch (_: Exception) { }
+        } catch (e: Exception) {
+            // Don't swallow this: without the env export the provider
+            // sees no key and translate fails with a confusing error.
+            android.util.Log.w("KuroPatch", "Os.setenv failed", e)
+        }
         thread {
             try {
                 val py = Python.getInstance()
@@ -261,7 +297,7 @@ class MainActivity : AppCompatActivity() {
                 val done = engine.callAttr("results_to_dict", results)
                 val translated: Map<String, String> = done.asMap()
                     .map { it.key.toString() to it.value.toString() }.toMap()
-                runOnUiThread {
+                safeUi {
                     setBusy(false)
                     val n = translated.size
                     binding.tvStatus.text = "$n strings translated"
@@ -270,7 +306,7 @@ class MainActivity : AppCompatActivity() {
                     translatedStrings = translated
                 }
             } catch (e: Exception) {
-                runOnUiThread {
+                safeUi {
                     setBusy(false)
                     showError("Translate failed", e.message ?: "unknown error")
                 }
@@ -303,7 +339,7 @@ class MainActivity : AppCompatActivity() {
                 jarMod.callAttr("patch_jar",
                     jarFile.absolutePath, toPyDict(py, translatedStrings),
                     outJar.absolutePath)
-                runOnUiThread {
+                safeUi {
                     setBusy(false)
                     patchedJar = outJar
                     binding.tvStatus.text =
@@ -316,7 +352,7 @@ class MainActivity : AppCompatActivity() {
                     if (!isFinishing && !isDestroyed) launchSaveDialog()
                 }
             } catch (e: Exception) {
-                runOnUiThread {
+                safeUi {
                     setBusy(false)
                     showError("Patch failed", e.message ?: "unknown error")
                 }
@@ -390,6 +426,10 @@ class MainActivity : AppCompatActivity() {
     private fun promptAgnesKey() {
         val input = android.widget.EditText(this).apply {
             hint = "Paste your Agnes API key"
+            // Password variation: the key must not sit visible on
+            // screen (screenshots / shoulder surfing).
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
         MaterialAlertDialogBuilder(this)
             .setTitle("Agnes API key (BYOK)")

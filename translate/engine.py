@@ -115,8 +115,14 @@ def translate_strings(strings, target_lang="id", source_lang="en",
         if cache is not None:
             hit = cache.get(text, source_lang, target_lang, provider.name)
             if hit is not None:
-                results.append(TranslateResult(key, text, hit, "cached", ""))
-                continue
+                # A cache hit is NOT automatically trustworthy: a
+                # stale / hand-edited / older-provider entry can drop
+                # placeholders, and shipping it unchecked would
+                # defeat the validator entirely. An invalid hit is a
+                # miss -- fall through and re-translate.
+                if validate(text, hit):
+                    results.append(TranslateResult(key, text, hit, "cached", ""))
+                    continue
 
         prompt_text = glossary.protect_hint(text)
         attempt = 0
