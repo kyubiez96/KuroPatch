@@ -37,7 +37,7 @@ _FORMAT_RE = re.compile(
     # "50% off"), making those common strings fail validation and
     # stay untranslated. A genuine "% d" (space-flag spec) is far
     # rarer in game strings than "N% word" text.
-    r"|\\m..\\m|\\f..\\f"                   # Gameloft paired codes (\m12\m, \f34\f)
+    r"|\\m.{1,2}\\m|\\f.{1,2}\\f"          # Gameloft paired codes (\m1\m, \m12\m, \f34\f) -- LOW #10: 1-char params were only half-matched
     r"|\\(?:[mfxnd]|p[1278]|v\d+)"          # Gameloft single codes (\p1, \v600, \x, \n, \d)
     # NOTE: $N style codes (Gameloft .loc text renderer: $0 heading,
     # $1/$2/$3 indents) are placeholders too -- a translation that
@@ -74,12 +74,33 @@ _URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
 # "Word/Word" segment is far more often a UI label ("Save/Load",
 # "Yes/No", "On/Off") than a path. Single-slash lowercase paths
 # ("res/drawable") still get skipped -- by the identifier rule below.
+# The extension branch is NOT in this regex (LOW #8): a suffix match
+# skipped whole sentences ("Save as .png"). Extensions are checked
+# per-token by _has_path_extension_token() instead.
 _PATH_RE = re.compile(
     r"^(?:/|\./|\.\./|[A-Za-z]:\\)"                   # absolute / dotted start
-    r"|^(?:[\w.\-]+/){2,}[\w.\-]+$"                    # multi-segment relative path (2+ slashes)
-    r"|\.(apk|dex|so|png|jpg|xml|json|db|ttf|ogg|mp3)$",  # known extensions
+    r"|^(?:[\w.\-]+/){2,}[\w.\-]+$",                    # multi-segment relative path (2+ slashes)
     re.IGNORECASE,
 )
+
+# A whole token that is a filename with a known extension
+# ("assets.apk", "foo/bar.png"). The token must have a name before
+# the dot: a bare ".png" (as in "Save as .png") is NOT a filename.
+_PATH_EXT_RE = re.compile(
+    r"^[\w.\-/]+\.(apk|dex|so|png|jpg|xml|json|db|ttf|ogg|mp3)$",
+    re.IGNORECASE,
+)
+
+
+def _has_path_extension_token(s):
+    """True if any whitespace-separated token is a filename with a
+    known extension (LOW #8). Surrounding punctuation is stripped so
+    "(icon.png)" and "icon.png," still match; "Save as .png" does not
+    (".png" has no name before the dot)."""
+    for tok in s.split():
+        if _PATH_EXT_RE.match(tok.strip(".,;:!?)\"'([\"")):
+            return True
+    return False
 
 # Tag-only strings: nothing but markup tags, e.g. "<b></b>", "<xliff:g/>".
 _TAGS_ONLY_RE = re.compile(r"^(?:\s*<[^>]+>\s*)+$")
@@ -177,13 +198,17 @@ def should_skip(text):
     # misclassified as a hex "number".
     if s.isalpha() and len(s) in (2, 3) and s.lower() in _ISO_LANG_CODES:
         return True, "language-code"
-    if _DIMENSION_RE.search(s):
+    # LOW #8: the dimension rule is anchored to the WHOLE string
+    # (fullmatch), not a substring search -- a sentence merely
+    # mentioning a resolution ("Play at 720p for best experience")
+    # used to be skipped wholesale. Only a bare dimension skips.
+    if _DIMENSION_RE.fullmatch(s):
         return True, "screen-dimension"
     if _URL_RE.search(s):
         return True, "url"
     if _VERSION_RE.match(s):
         return True, "version"
-    if _PATH_RE.search(s):
+    if _PATH_RE.search(s) or _has_path_extension_token(s):
         return True, "file-path"
     if _TAGS_ONLY_RE.match(s):
         return True, "tags-only"
@@ -198,7 +223,14 @@ def should_skip(text):
         # in "..." is skipped and stays untranslated (proven on .loc
         # fragments). Keys keep their separators between word chars.
         core = s.rstrip(".")
-        if _IDENT_CHARS_RE.search(core) and not _SLASH_LABEL_RE.match(s):
+        # LOW #7: hyphenated display words ("well-known", "two-player",
+        # "co-op") are real words, not identifiers. The identifier
+        # rule only fires when the token carries a digit / underscore
+        # / dot / slash / colon / dollar -- letters + hyphens alone
+        # never count.
+        if (_IDENT_CHARS_RE.search(core)
+                and not _SLASH_LABEL_RE.match(s)
+                and not re.fullmatch(r"[A-Za-z]+(?:-[A-Za-z]+)+", core)):
             return True, "identifier"
         if s.islower() and s.isalpha():
             return True, "lower-token"

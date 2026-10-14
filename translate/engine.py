@@ -32,6 +32,43 @@ _RECOVERY_BACKOFFS = (10.0, 30.0)
 # Test hook: tests patch translate.engine._sleep to avoid real waits.
 _sleep = time.sleep
 
+# Guard skip reasons that are HEURISTICS (MED #2): a curated exact
+# fixed-map / language-map match beats these. All other reasons are
+# STRUCTURAL (dimension / URL / version / path / tags / number /
+# empty / null / non-string) and always win -- a fixed-map key can
+# never be a URL or a dimension, so structural-first is safe.
+_HEURISTIC_SKIP_REASONS = frozenset({
+    "language-code", "identifier", "lower-token", "no-word",
+})
+
+# Stricter instruction for the validation-retry attempt (MED #3): it
+# goes into the provider's INSTRUCTION block via extra_instruction,
+# next to the same full instruction block the first attempt gets --
+# never a reduced prompt, never inside the Text: field.
+_RETRY_INSTRUCTION = (
+    "Translate ONLY. Do not explain. Copy every placeholder "
+    "character-for-character."
+)
+
+
+def _reapply_whitespace(source, translation):
+    """Re-apply the source's exact leading/trailing whitespace.
+
+    HIGH #1: the provider no longer strips, but model replies still
+    arrive with arbitrary edge whitespace (e.g. a trailing newline
+    the model added). The source's edge whitespace is load-bearing
+    (fragments completed at runtime), so the translation is
+    normalized to the source's edges: strip the reply, then wrap it
+    in the source's exact leading + trailing whitespace. Applied
+    before validation, so the validator's whitespace check is a
+    safety net for direct callers, not the repair itself.
+    """
+    if not isinstance(translation, str) or not isinstance(source, str):
+        return translation
+    leading = source[:len(source) - len(source.lstrip())]
+    trailing = source[len(source.rstrip()):]
+    return leading + translation.strip() + trailing
+
 
 class TranslateResult:
     """Outcome for one input string."""
@@ -118,14 +155,24 @@ def translate_strings(strings, target_lang="id", source_lang="en",
     consecutive_provider_errors = 0
     provider_dead = False
     recoveries_used = 0
+    # LOW A4: throttle spaces CONSECUTIVE calls -- there is no
+    # predecessor before the very first provider call of the batch,
+    # so pacing it is provably redundant. Batch-scoped (NOT per
+    # string): every later string's first call IS consecutive.
+    first_provider_call = True
     for key, text in strings.items():
         skip, reason = guard_mod.should_skip(text)
-        if skip:
+        if skip and reason not in _HEURISTIC_SKIP_REASONS:
+            # Structural skip: dimension / URL / version / path /
+            # tags / number / empty -- a fixed-map match can never
+            # override these (no fixed key is a URL or dimension).
             results.append(TranslateResult(key, text, text, "skipped", reason))
             continue
-        if glossary.is_only_terms(text):
-            results.append(TranslateResult(key, text, text, "skipped", "glossary"))
-            continue
+        # Curated lookups win over HEURISTIC guard rules (MED #2):
+        # "monday" is a lower-token skip but a fixed-map hit (Senin);
+        # "may" is a language-code skip but a fixed-map hit (Mei);
+        # "lao" is a language-code skip but a language-map hit (Laos).
+        # Only EXACT curated-map matches win -- nothing else changes.
         # Language names: fixed mapping, never LLM-guessed (and never
         # shadowed by a stale/wrong cache entry). Indonesian target only.
         if target_lang == "id":
@@ -141,6 +188,13 @@ def translate_strings(strings, target_lang="id", source_lang="en",
             results.append(TranslateResult(
                 key, text, fixed, "translated", "fixed-map"))
             continue
+        if skip:
+            # Heuristic skip with no curated match: keep it skipped.
+            results.append(TranslateResult(key, text, text, "skipped", reason))
+            continue
+        if glossary.is_only_terms(text):
+            results.append(TranslateResult(key, text, text, "skipped", "glossary"))
+            continue
         if cache is not None:
             hit = cache.get(text, source_lang, target_lang, provider.name)
             if hit is not None:
@@ -153,10 +207,25 @@ def translate_strings(strings, target_lang="id", source_lang="en",
                     results.append(TranslateResult(key, text, hit, "cached", ""))
                     continue
 
-        prompt_text = glossary.protect_hint(text)
+        # Keep-verbatim terms for the INSTRUCTION block (MED #5): the
+        # terms list goes to the provider via extra_instruction, so it
+        # is never part of the translatable Text: field (a weak model
+        # used to echo/translate the note into the game string).
+        terms = glossary.terms_in(text)
+        terms_line = None
+        if terms:
+            terms_line = (
+                "Terms to keep verbatim: "
+                + ", ".join(f'"{t}"' for t in terms) + "."
+            )
+        extra_instruction = terms_line
         attempt = 0
         translated = None
         last_error = ""
+        # Skip the throttle sleep once, immediately after a recovery
+        # backoff (LOW A4): the 10s/30s backoff already spaced the
+        # next call -- sleeping the throttle on top is redundant.
+        skip_throttle_once = False
         if provider_dead:
             # Provider already proven dead this batch: don't call it
             # again, just mark this string failed. (Skipped /
@@ -174,16 +243,36 @@ def translate_strings(strings, target_lang="id", source_lang="en",
                 # .loc batch doesn't trip the free-tier rate limit
                 # with rapid-fire requests. Providers without a
                 # throttle_seconds attribute (stubs, passthrough)
-                # get no delay -- tests stay instant.
+                # get no delay -- tests stay instant. Skipped before
+                # the batch's first call and right after a recovery
+                # backoff (LOW A4) -- both provably redundant.
                 delay = getattr(provider, "throttle_seconds", 0) or 0
-                if delay > 0:
+                if (delay > 0 and not first_provider_call
+                        and not skip_throttle_once):
                     _sleep(delay)
+                first_provider_call = False
+                skip_throttle_once = False
                 translated = provider.translate(
-                    prompt_text, source_lang, target_lang)
+                    text, source_lang, target_lang,
+                    extra_instruction=extra_instruction)
+                # HIGH #1: re-apply the source's exact edge
+                # whitespace before validation (see _reapply_whitespace).
+                translated = _reapply_whitespace(text, translated)
                 # Provider answered (even if validation then rejects
                 # it): the infrastructure is up, reset the streak.
                 consecutive_provider_errors = 0
             except Exception as exc:  # provider blew up: fail safe
+                # NOTE (audit HIGH A1, VERIFIED intended -- do not
+                # "fix" by retrying here): the `break` below ends this
+                # string WITHOUT an engine-level retry, and that is
+                # deliberate. Each provider call ALREADY retries
+                # internally (AgnesProvider._fetch retries 429/5xx
+                # 3x with backoff before raising), so a string that
+                # reaches this `except` already had up to 4 attempts.
+                # The engine's job is batch-level: abort on a
+                # 3-streak, recover on transient. Retrying again here
+                # would just multiply attempts (and 429 pressure).
+                # Proven by TestProviderLevelRetriesCoverStreak.
                 last_error = str(exc)
                 consecutive_provider_errors += 1
                 if (consecutive_provider_errors
@@ -201,6 +290,21 @@ def translate_strings(strings, target_lang="id", source_lang="en",
                         recoveries_used += 1
                         _sleep(_RECOVERY_BACKOFFS[recoveries_used - 1])
                         consecutive_provider_errors = 0
+                        # NOTE (audit HIGH A2, VERIFIED no-op): the
+                        # `continue` below re-enters the loop with
+                        # `attempt` unchanged -- and that is safe.
+                        # `attempt` only grows on validation failure,
+                        # which requires a provider ANSWER, and every
+                        # answer resets the streak to 0. So a string
+                        # that just failed validation can contribute
+                        # at most 1 to the streak -- never reaching
+                        # the 3-streak recovery. Every recovery that
+                        # DOES fire therefore has attempt == 0 (no
+                        # prior answer in this string's loop), so the
+                        # retry always happens; the sleep is never
+                        # wasted. Proven by
+                        # TestRecoveryNeverWastesSleepAtMaxAttempt.
+                        skip_throttle_once = True
                         continue
                     provider_dead = True
                 break
@@ -210,15 +314,15 @@ def translate_strings(strings, target_lang="id", source_lang="en",
             last_error = f"placeholder mismatch: missing={check.missing}"
             translated = None
             attempt += 1
-            # Retry once with an even stricter instruction -- keeping
-            # the glossary keep-verbatim hint, which the old retry
-            # prompt dropped (a retried string could then mistranslate
-            # a brand term the first attempt had protected).
-            prompt_text = (
-                "Translate ONLY. Do not explain. Copy every placeholder "
-                "character-for-character.\n"
-                + glossary.protect_hint(text)
-            )
+            # Retry with the SAME full instruction block the first
+            # attempt gets (the provider adds it on every call) PLUS
+            # the stricter placeholder line (MED #3) -- as
+            # extra_instruction, never a reduced prompt stuffed into
+            # the Text: field. The keep-verbatim terms ride along.
+            retry_parts = [_RETRY_INSTRUCTION]
+            if terms_line:
+                retry_parts.append(terms_line)
+            extra_instruction = "\n".join(retry_parts)
 
         if translated is None:
             results.append(TranslateResult(

@@ -88,7 +88,12 @@ class TranslationCache:
                 os.unlink(self.path + ".tmp")
             except OSError:
                 pass
-        self._dirty = False
+        else:
+            # LOW #11: _dirty clears ONLY on success. A failed write
+            # used to clear the flag, so the translations were never
+            # retried -- lost from disk, re-translated next batch
+            # (wasted API quota). Now a later save() retries.
+            self._dirty = False
 
     def __len__(self):
         return len(self._data)

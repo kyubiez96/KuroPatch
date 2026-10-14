@@ -28,6 +28,14 @@ class ValidationResult:
         )
 
 
+def _edge_ws(s):
+    """Return (leading_whitespace, trailing_whitespace) of ``s``."""
+    return (
+        s[:len(s) - len(s.lstrip())],
+        s[len(s.rstrip()):],
+    )
+
+
 def validate(source, translation):
     """Check placeholder integrity of a translation.
 
@@ -41,6 +49,25 @@ def validate(source, translation):
     out) and ship as a blanked-out game string, and a None translation
     crashed here with TypeError. Reject it so the engine retries, then
     marks the string failed and keeps the source.
+
+    Line breaks must match exactly (MED #4): line breaks are manual
+    layout in game dialogue, and a translation that merges/splits lines
+    used to ship unchecked.
+
+    Leading/trailing whitespace must match exactly (HIGH #1): fragments
+    are completed at runtime by concatenation ("5" + " detik tersisa"),
+    so a stripped edge corrupts the rendered sentence. The engine
+    re-applies the source's edge whitespace before calling here, so
+    this is a safety net for direct callers (cache hits, patch-time
+    checks) -- it must still fail closed.
+
+    A real newline in the translation satisfies a literal ``\\n``
+    escape in the source (LOW #9): providers emit real newlines for
+    literal escapes (e.g. .properties "Line1\\nLine2" -> "Line1\nLine2").
+    The translation is normalized (real newlines converted back to
+    literal escapes, up to the number of literal escapes in the
+    source) BEFORE the placeholder / line-break / whitespace checks,
+    so a correct conversion passes instead of failing forever.
     """
     if not isinstance(source, str):
         source = ""
@@ -48,8 +75,16 @@ def validate(source, translation):
         not translation.strip() and source.strip()
     ):
         return ValidationResult(ok=False, missing=["<empty>"])
+    eff = translation
+    literal_n = source.count("\\n")
+    if literal_n and "\n" in translation:
+        eff = translation.replace("\n", "\\n", literal_n)
+    if source.count("\n") != eff.count("\n"):
+        return ValidationResult(ok=False, missing=["<line-breaks>"])
+    if _edge_ws(source) != _edge_ws(eff):
+        return ValidationResult(ok=False, missing=["<whitespace>"])
     src_list = extract_placeholders(source)
-    dst_list = extract_placeholders(translation)
+    dst_list = extract_placeholders(eff)
     if src_list == dst_list:
         return ValidationResult(ok=True)
     src = Counter(src_list)

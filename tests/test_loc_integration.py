@@ -36,9 +36,9 @@ class _MarkerProvider(BaseProvider):
 
     name = "marker"
 
-    def translate(self, text, source_lang="en", target_lang="id"):
-        # The engine passes protect_hint(text), which appends a
-        # "[Keep these terms ...]" note -- strip it back off.
+    def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
+        # The engine passes the RAW text; keep-verbatim terms travel
+        # via extra_instruction (instruction block), not in the text.
         base = text.split("\n[Keep these terms")[0]
         return base + " [ID]"
 
@@ -48,7 +48,7 @@ class _DropDollarProvider(BaseProvider):
 
     name = "drop-dollar"
 
-    def translate(self, text, source_lang="en", target_lang="id"):
+    def translate(self, text, source_lang="en", target_lang="id", extra_instruction=None):
         base = text.split("\n[Keep these terms")[0]
         return base.replace("$0", "").replace("$1", "").replace("$2", "")
 
