@@ -121,6 +121,17 @@ _DATA_DELIM_RE = re.compile(rb"[=;:,|\"'\t<>{}()\[\]&!]+")
 # has one. Catches staccato prose ("Go. Fight. Win.") whose tokens
 # contain no spaces and would otherwise pass the key-shape gate.
 _SENTENCE_BOUNDARY_RE = re.compile(rb"[.!?]\s+\S")
+# Prose separators: ", " / " & " / " | " join phrases in prose
+# ("Hello, world", "Tom & Jerry") but NEVER join key material --
+# key lists are compact ("a,b,c") and key pairs use = ; :
+# ("name=Link, hp=100", "key=value; other=thing"). A run with NO
+# key-structure character (= ; :) that uses a prose separator is
+# prose, not key material. (Round 3: the token-space gate alone did
+# NOT catch "Tom & Jerry" -- splitting on '&' yields "Tom"/"Jerry",
+# neither containing a space; the space was delimiter-adjacent and
+# stripped away.)
+_KEY_STRUCTURE_RE = re.compile(rb"[=;:]")
+_PROSE_SEPARATOR_RE = re.compile(rb",\s|\s[&|]\s")
 # Keys are short identifiers; truncate over-long runs before matching.
 _MAX_KEY_LEN = 200
 # One trailing "(...)" suffix (region qualifier: "Inggris (US)").
@@ -253,7 +264,9 @@ def _data_key_strings(workspace, candidates):
                 tokens = [t for t in tokens if t]
                 if (any(b" " in t for t in tokens)
                         or _SENTENCE_BOUNDARY_RE.search(run)
-                        or run.rstrip().endswith((b"!", b"?"))):
+                        or run.rstrip().endswith((b"!", b"?"))
+                        or (not _KEY_STRUCTURE_RE.search(run)
+                            and _PROSE_SEPARATOR_RE.search(run))):
                     continue
                 for tok in tokens:
                     hit = cand_bytes.get(tok)

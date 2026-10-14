@@ -836,6 +836,119 @@ class TestDataKeyProseGate(unittest.TestCase):
             self.assertIn("Welcome", jar_mod.collect_strings(src)["strings"])
 
 
+class TestDataKeyProseSeparator(unittest.TestCase):
+    """Final audit round 3: the round-2 gate had a hole -- splitting
+    "Tom & Jerry" on '&' yields "Tom"/"Jerry", NEITHER containing a
+    space (the space was delimiter-adjacent and stripped away), so
+    the token-space check passed and "Tom" was over-skipped as a key.
+    The round-2 test missed this because it used "Tom & Jerry are
+    friends." -- the multi-word "Jerry are friends" token HAS a space
+    and trips the gate. These tests use the BARE form (no trailing
+    prose). A run with NO key-structure character (= ; :) that uses a
+    prose separator (", " / " & " / " | ") is prose, not key material.
+    Structured runs ("name=Link, hp=100", "key=value; other=thing")
+    are exempt: their = / ; / : mark them as key material."""
+
+    def _jar(self, td, data_content, candidate):
+        src = os.path.join(td, "game.jar")
+        with zipfile.ZipFile(src, "w") as z:
+            z.writestr("data.txt", data_content)
+            z.writestr("Game.class", _make_class_with_string(candidate))
+        return src
+
+    def test_bare_amp_prose_not_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "Tom & Jerry", "Tom")
+            self.assertIn("Tom", jar_mod.collect_strings(src)["strings"])
+
+    def test_bare_comma_prose_not_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "Hello, world", "Hello")
+            self.assertIn("Hello", jar_mod.collect_strings(src)["strings"])
+
+    def test_bare_pipe_prose_not_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            # "yes" is a technical token filtered at collect, so use Attack.
+            src = self._jar(td, "Attack | Defend", "Attack")
+            self.assertIn("Attack", jar_mod.collect_strings(src)["strings"])
+
+    def test_structured_comma_pairs_still_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "name=Link, hp=100", "name")
+            self.assertNotIn("name", jar_mod.collect_strings(src)["strings"])
+
+    def test_compact_comma_list_still_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "alpha,beta,gamma", "alpha")
+            self.assertNotIn("alpha", jar_mod.collect_strings(src)["strings"])
+
+
+class TestDataKeyProseSeparators(unittest.TestCase):
+    """Final audit round 3: the round-2 token-space gate did NOT catch
+    BARE prose separators -- "Tom & Jerry" (no trailing words) splits
+    on '&' to "Tom"/"Jerry", neither containing a space (the spaces
+    were delimiter-adjacent and stripped away), so "Tom" was flagged
+    as a key. A run with NO key-structure character (= ; :) that uses
+    a prose separator (", " / " & " / " | ") is prose, not key
+    material. Compact key lists ("a,b,c") and key pairs
+    ("name=Link, hp=100") still count as keys. Each prose test below
+    FAILED on round-2 code and PASSES with the separator gate."""
+
+    def _jar(self, td, data_content, candidate):
+        src = os.path.join(td, "game.jar")
+        with zipfile.ZipFile(src, "w") as z:
+            z.writestr("data.txt", data_content)
+            z.writestr("Game.class", _make_class_with_string(candidate))
+        return src
+
+    def test_bare_amp_prose_not_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "Tom & Jerry\n", "Tom")
+            self.assertIn("Tom", jar_mod.collect_strings(src)["strings"])
+
+    def test_bare_comma_space_prose_not_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "Hello, world\n", "Hello")
+            self.assertIn("Hello", jar_mod.collect_strings(src)["strings"])
+
+    def test_bare_pipe_prose_not_dropped(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "cats | dogs\n", "cats")
+            self.assertIn("cats", jar_mod.collect_strings(src)["strings"])
+
+    def test_compact_comma_list_still_dropped(self):
+        # Commas WITHOUT a following space are compact key lists,
+        # not prose separators -- still key material.
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "alpha,beta,gamma\n", "alpha")
+            self.assertNotIn("alpha", jar_mod.collect_strings(src)["strings"])
+
+    def test_key_pairs_with_comma_space_still_dropped(self):
+        # A key-structure character (=) anywhere in the run means
+        # key material, even with ", " between pairs.
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "name=Link, hp=100\n", "Link")
+            self.assertNotIn("Link", jar_mod.collect_strings(src)["strings"])
+
+    def test_key_pairs_key_side_still_dropped(self):
+        # Same structured run, KEY side: "name" must also survive
+        # as key material (the gate must not drop either side).
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = self._jar(td, "name=Link, hp=100\n", "name")
+            self.assertNotIn("name", jar_mod.collect_strings(src)["strings"])
+
+
 class TestDataKeyUTF16(unittest.TestCase):
     """Final audit round 2: _data_key_strings only scanned UTF-8 runs.
     A key stored as UTF-16LE / UTF-16BE text in a data file (a
