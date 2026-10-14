@@ -890,6 +890,18 @@ class JarPatcher:
         # disk-full mid-rebuild must never leave a partial zip at
         # the output path (see atomic publish below).
         tmp_path = output_path + ".tmp"
+        # A previous run killed mid-rebuild (SIGKILL) can't clean
+        # up: drop its stale temp file so .tmp files don't pile up
+        # in the output dir.
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        # The temp file itself must never be read back as entry data:
+        # if the archive contains an entry whose workspace path IS
+        # the temp path, reading it would splice a half-written zip
+        # into the output. Skip it like the output path.
+        skip.add(os.path.realpath(tmp_path))
         try:
             self._rebuild_to(source_path=self.jar_path, tmp_path=tmp_path,
                              ordered=ordered, skip=skip)

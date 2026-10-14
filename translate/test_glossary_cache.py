@@ -148,6 +148,19 @@ class TestCache(unittest.TestCase):
             self.assertIsNone(c.get("World", "en", "id", "agnes"))
             self.assertEqual(c.get("Good", "en", "id", "agnes"), "Bagus")
 
+    def test_cache_path_is_directory_save_does_not_crash(self):
+        # Round-3 audit: a directory sitting at the cache path made
+        # save() raise IsADirectoryError (os.replace file onto dir).
+        # Cache is best-effort -- the write is dropped, translation
+        # must not crash.
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "cache-dir")
+            os.makedirs(p)
+            c = TranslationCache(p)
+            c.put("hi", "en", "id", "agnes", "halo")
+            c.save()  # must not raise
+            self.assertEqual(c.get("hi", "en", "id", "agnes"), "halo")
+
 
 if __name__ == "__main__":
     unittest.main()

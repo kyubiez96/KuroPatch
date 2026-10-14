@@ -125,6 +125,27 @@ class TestEngine(unittest.TestCase):
             self.assertEqual(r2[0].translation, r1[0].translation)
             self.assertEqual(p2.calls, [])
 
+    def test_invalid_cache_hit_is_retranslated(self):
+        # Round-3 audit: a cache hit was trusted blindly -- a stale /
+        # hand-edited entry that drops placeholders shipped straight
+        # into the game, defeating the validator. An invalid hit is
+        # a miss: the provider is consulted again.
+        import json as _json
+        from cache import _key as _cache_key
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "c.json")
+            with open(p, "w") as fh:
+                _json.dump({
+                    _cache_key("You earned %d gold", "en", "id", "mock"):
+                        "Kamu dapat emas",  # %d dropped -- corrupt
+                }, fh)
+            cache = TranslationCache(p)
+            res = translate_strings({"k": "You earned %d gold"},
+                                    provider=MockProvider(), cache=cache)
+            # MockProvider returns "ID:<source>", placeholders intact
+            self.assertEqual(res[0].status, "translated")
+            self.assertIn("%d", res[0].translation)
+
     def test_placeholder_validation_failure(self):
         p = MockProvider(fail_on={"You earned %d gold"})
         res = translate_strings({"k": "You earned %d gold"}, provider=p,

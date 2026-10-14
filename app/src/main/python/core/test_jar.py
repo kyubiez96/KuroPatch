@@ -377,6 +377,33 @@ class TestPropertiesEdgeCases(unittest.TestCase):
         pf.entries[0].value = "dunia"
         self.assertIn(b"dunia", pf.to_bytes())
 
+    def test_bom_preserved_when_first_entry_changes(self):
+        # Round-3 audit: replacing the first physical line dropped
+        # the BOM (render() has no BOM), so an edited file lost its
+        # signature bytes. Cosmetic, but byte churn for no reason.
+        from core.patcher import PropertiesFile
+        pf = PropertiesFile.loads(
+            b"\xef\xbb\xbf" + b"first=one \\\n    two\nsecond=hello\n")
+        pf.set("first", "eins zwei")
+        out = pf.to_bytes()
+        self.assertTrue(out.startswith(b"\xef\xbb\xbf"))
+        pf2 = PropertiesFile.loads(out)
+        self.assertEqual(pf2.get("first"), "eins zwei")
+        self.assertEqual(pf2.get("second"), "hello")
+
+    def test_empty_and_dot_entry_names_do_not_crash_extract(self):
+        # Round-3 audit: an entry named "" or "." made extract()
+        # target the workspace directory itself (IsADirectoryError),
+        # crashing collect/patch on a malformed jar.
+        with tempfile.TemporaryDirectory() as td:
+            jar = os.path.join(td, "weird.jar")
+            with zipfile.ZipFile(jar, "w") as z:
+                z.writestr("", b"weird")
+                z.writestr(".", b"dot")
+                z.writestr("ok.properties", b"msg=Hello world\n")
+            res = jar_mod.collect_strings(jar)
+            self.assertIn("Hello world", res["strings"])
+
     def test_class_oversize_boundary(self):
         # Round-2 audit: the 64KB skip is a boundary -- exactly 65535
         # bytes must patch, 65536 must skip. (The earlier probe used a
