@@ -13,6 +13,35 @@ import urllib.request
 # TRANSIENT. 4xx (401 bad key, 400 bad request, 404, ...) are NOT
 # retried -- retrying a bad key is just slow failure.
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+# Explicit key handoff from the Android app (Chaquopy).
+#
+# WHY THIS EXISTS (proven on-device bug, v2.0.9): Kotlin exported the
+# key with android.system.Os.setenv("AGNES_API_KEY", key), but
+# CPython's os.environ is a SNAPSHOT taken at interpreter startup --
+# a libc setenv() from outside Python does NOT update the os.environ
+# dict. So AgnesProvider._api_key() (os.environ.get(...)) ALWAYS saw
+# "" on-device and the provider NEVER got the key, since v2.0.0. The
+# failures were swallowed pre-4fb0954 ("0 translated, N unchanged");
+# after 4fb0954 they surfaced as "AGNES_API_KEY environment variable"
+# errors even though the user had saved a key. Only glossary
+# translations ever landed on-device.
+#
+# FIX: the app calls set_api_key(key) explicitly via Chaquopy before
+# any translate call. The key lives in this module variable, in-memory
+# only -- never logged, never written to disk by Python. The env-var
+# fallback stays for CLI use (where os.environ is genuinely set by
+# the caller's shell).
+_API_KEY = None
+
+
+def set_api_key(key):
+    """Set the Agnes API key for this process (Android app path).
+
+    Blank / None clears the override, restoring pure env-var lookup.
+    """
+    global _API_KEY
+    _API_KEY = key.strip() if isinstance(key, str) and key.strip() else None
 _MAX_PROVIDER_RETRIES = 3
 # Server-sent Retry-After is honoured but capped: a runaway "wait
 # 3600s" must not stall the on-device translate job.
@@ -68,9 +97,10 @@ class PassthroughProvider(BaseProvider):
 class AgnesProvider(BaseProvider):
     """Free OpenAI-compatible backend (agnes-3.0-flash).
 
-    Reads API key from the AGNES_API_KEY environment variable at call
-    time. The key is never stored, never logged, never accepted as a
-    default argument.
+    Key resolution: explicit set_api_key() override FIRST (the Android
+    app path -- Chaquopy; see module note), then the AGNES_API_KEY
+    environment variable (CLI path). The key is never stored, never
+    logged, never accepted as a default argument.
     """
 
     name = "agnes"
@@ -81,6 +111,10 @@ class AgnesProvider(BaseProvider):
         self.timeout = timeout
 
     def _api_key(self):
+        # Explicit override (Android app via set_api_key) wins: on-device
+        # os.environ never sees Kotlin's Os.setenv (CPython snapshot).
+        if _API_KEY:
+            return _API_KEY
         key = os.environ.get("AGNES_API_KEY", "")
         if not key:
             raise RuntimeError(

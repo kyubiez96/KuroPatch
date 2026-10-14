@@ -282,14 +282,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         setBusy(true, "Translating…")
-        // export BYOK key so Chaquopy Python (os.environ) can read it
-        try {
-            android.system.Os.setenv("AGNES_API_KEY", getAgnesKey(), true)
-        } catch (e: Exception) {
-            // Don't swallow this: without the env export the provider
-            // sees no key and translate fails with a confusing error.
-            android.util.Log.w("KuroPatch", "Os.setenv failed", e)
-        }
+        exportAgnesKey()
         thread {
             try {
                 val py = Python.getInstance()
@@ -481,6 +474,31 @@ class MainActivity : AppCompatActivity() {
         getSharedPreferences("kuropatch", MODE_PRIVATE)
             .getString("agnes_key", "") ?: ""
 
+    // Hand the BYOK key to Chaquopy Python explicitly.
+    //
+    // Os.setenv ALONE IS NOT ENOUGH (proven on-device bug, v2.0.9):
+    // CPython's os.environ is a snapshot from interpreter startup, so
+    // a libc setenv() from Kotlin never reaches Python's os.environ
+    // dict -- AgnesProvider._api_key() always saw "" and translate
+    // failed even with a saved key. The explicit
+    // translate.providers.set_api_key() call is the real handoff;
+    // Os.setenv stays as belt-and-braces (harmless).
+    // Called before every translate AND right after a new key is
+    // saved, so the provider always has the current key.
+    private fun exportAgnesKey() {
+        try {
+            android.system.Os.setenv("AGNES_API_KEY", getAgnesKey(), true)
+        } catch (e: Exception) {
+            android.util.Log.w("KuroPatch", "Os.setenv failed", e)
+        }
+        try {
+            Python.getInstance().getModule("translate.providers")
+                .callAttr("set_api_key", getAgnesKey())
+        } catch (e: Exception) {
+            android.util.Log.w("KuroPatch", "set_api_key failed", e)
+        }
+    }
+
     private fun promptAgnesKey() {
         val input = android.widget.EditText(this).apply {
             hint = "Paste your Agnes API key"
@@ -508,7 +526,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 getSharedPreferences("kuropatch", MODE_PRIVATE).edit()
                     .putString("agnes_key", key).apply()
-                // export for Chaquopy
+                // Hand the new key to Python NOW (not just at the
+                // next translate call) so the provider has it.
+                exportAgnesKey()
                 translateStrings()
             }
             .setNegativeButton("Cancel", null)
