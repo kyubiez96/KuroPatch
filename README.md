@@ -1,53 +1,51 @@
 # KuroPatch v2
 
-Game localisation patcher — rebuilt from scratch. Python stdlib only, no
-pip dependencies for the core engine.
+Game localisation patcher for Java games — on-device .jar patching.
+Python stdlib only, no pip dependencies for the core engine.
+
+**Target: `.jar` ONLY.** The Android app patches .jar game resources
+(.properties + smali const-string + .class constants + Gameloft string
+packs) on-device. Full APK patching needs apktool, which requires a real
+JVM and cannot run on Android — the app refuses .apk files with an
+explanation; use the PC CLI workflow for APKs.
 
 ## Layout
 
 ```
 kuropatch-v2/
   core/        patching engine (stdlib only)
-    apk.py       APK extract, binary AndroidManifest.xml parser, resource discovery
-    strings.py   .properties / strings.xml / .stringpack parsers (round-trip safe)
-    patcher.py   apply translations, repack, zipalign, sign
+    jar.py       .jar pipeline: collect strings, apply translations, repack
+    patcher.py   archive engine: JarPatcher, .properties, smali, .class
+    stringpacks.py Gameloft string-pack resources (LZMA string tables)
   cli/
-    main.py      `kpatch` command line (extract/translate/build/patch)
+    main.py      `kpatch` command line (collect/translate/patch)
   translate/     auto-translate engine (separate module, Agnes BYOK)
-  tests/         unittest suite (31 tests)
+  tests/         unittest suite
+  app/           Android app (Material 3, Chaquopy, .jar only)
 ```
 
 ## Usage
 
 ```bash
-# unpack an APK, show manifest info + string files
-python3 -m cli.main extract game.apk
+# list translatable strings in a .jar
+python3 -m cli.main collect game.jar
 
-# apply a translations JSON to a strings file
-python3 -m cli.main translate res/values/strings.xml \
-    --translations id.json -o res/values-id/strings.xml
+# apply a translations JSON ({source: translation}) to a .jar
+python3 -m cli.main translate game.jar --translations id.json -o game_id.jar
 
 # auto-translate with the translate engine (BYOK via AGNES_API_KEY)
-AGNES_API_KEY=... python3 -m cli.main translate res/values/strings.xml \
-    --auto --provider agnes --lang id
-
-# repack an extracted tree
-python3 -m cli.main build game.apk.extracted -o game-id.apk --sign
-
-# full pipeline
-python3 -m cli.main patch game.apk --lang id --translations id.json
+AGNES_API_KEY=... python3 -m cli.main patch game.jar --provider agnes --target id
+# -> game_id.jar
 ```
 
 ## Design notes
 
-- String values are opaque: `%d`, `%1$s`, `<b>` markup and escapes survive
-  round-trips byte-identically (covered by tests).
-- `strings.xml` arrays/plurals map to `name[i]` / `name{q}` keys and regroup
-  on save. Non-translatable resources (colors, dimens) are never touched.
-- Android translations go to `res/values-<lang>/` (proper localization),
-  never overwriting the source `res/values/`.
-- Binary `AndroidManifest.xml` is parsed without apktool; `resources.arsc`
-  is stored uncompressed on repack.
+- Collection is permissive (cheap safety filters only); the full skip
+  heuristics (screen dims, versions, URLs, paths, placeholders) live in
+  `translate.guard` and are applied at translate time.
+- Translations match by decoded source value across all four sources.
+- Repack preserves entry order, compression, timestamps and MANIFEST.MF;
+  stale .SF/.RSA signatures are stripped (output is unsigned by design).
 - The patcher consumes `dict[str, str]`; providers/keys live in
   `translate/` and are never handled here.
 
@@ -55,4 +53,5 @@ python3 -m cli.main patch game.apk --lang id --translations id.json
 
 ```bash
 python3 -m unittest discover -s tests
+python3 -m unittest discover -s translate -p "test_*.py"
 ```

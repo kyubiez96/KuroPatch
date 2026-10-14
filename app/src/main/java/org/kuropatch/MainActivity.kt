@@ -20,26 +20,39 @@ import kotlin.concurrent.thread
 /**
  * KuroPatch v2 — premium game localisation patcher.
  *
- * Flow: pick APK → extract strings → auto-translate (Agnes BYOK) → preview → patch.
+ * On-device target is .JAR ONLY (Java game resources: .properties +
+ * smali const-string + .class constants + string packs).
+ * .apk files are REFUSED: full APK patching needs apktool, which
+ * requires a real JVM and cannot run on Android. For APKs use the
+ * PC CLI.
+ *
+ * Flow: pick .jar → extract strings → auto-translate (Agnes BYOK)
+ * → patch .jar → save as <name>_<target>.jar.
  * Python engine (core/ + translate/) runs on-device via Chaquopy.
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private var apkUri: Uri? = null
-    private var apkName: String = ""
+    private var jarUri: Uri? = null
+    private var jarName: String = ""
     private var extractedStrings: Map<String, String> = emptyMap()
 
-    private val pickApk = registerForActivityResult(
+    private val pickJar = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
         val uri = result.data?.data ?: return@registerForActivityResult
-        apkUri = uri
-        apkName = queryName(uri) ?: "game.apk"
-        binding.tvApkName.text = apkName
+        val name = queryName(uri) ?: "game.jar"
+        // Refuse .apk: apktool needs a real JVM, cannot run on Android.
+        if (name.endsWith(".apk", ignoreCase = true)) {
+            showApkNotice()
+            return@registerForActivityResult
+        }
+        jarUri = uri
+        jarName = name
+        binding.tvJarName.text = jarName
         binding.btnExtract.isEnabled = true
-        binding.cardApk.visibility = View.VISIBLE
+        binding.cardJar.visibility = View.VISIBLE
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -50,10 +63,10 @@ class MainActivity : AppCompatActivity() {
         setupLanguageSpinner()
         setupProviderSpinner()
 
-        binding.btnPickApk.setOnClickListener { launchPicker() }
+        binding.btnPickJar.setOnClickListener { launchPicker() }
         binding.btnExtract.setOnClickListener { extractStrings() }
         binding.btnTranslate.setOnClickListener { translateStrings() }
-        binding.btnPatch.setOnClickListener { patchApk() }
+        binding.btnPatch.setOnClickListener { patchJar() }
     }
 
     private fun initPython() {
@@ -76,12 +89,11 @@ class MainActivity : AppCompatActivity() {
     private fun launchPicker() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/vnd.android.package-archive"
+            type = "*/*"
             putExtra(Intent.EXTRA_MIME_TYPES,
-                arrayOf("application/vnd.android.package-archive",
-                    "application/octet-stream"))
+                arrayOf("application/java-archive", "application/octet-stream"))
         }
-        pickApk.launch(intent)
+        pickJar.launch(intent)
     }
 
     private fun queryName(uri: Uri): String? {
@@ -101,46 +113,33 @@ class MainActivity : AppCompatActivity() {
     private fun providerName(): String =
         if (binding.spinnerProvider.selectedItemPosition == 0) "agnes" else "passthrough"
 
+    private fun showApkNotice() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.apk_not_supported_title)
+            .setMessage(R.string.apk_not_supported)
+            .setPositiveButton(R.string.dialog_ok, null)
+            .show()
+    }
+
     private fun extractStrings() {
-        val uri = apkUri ?: return
+        val uri = jarUri ?: return
         setBusy(true, "Extracting strings…")
         thread {
             try {
                 val py = Python.getInstance()
-                val apkMod = py.getModule("core.apk")
-                val stringsMod = py.getModule("core.strings")
+                val jarMod = py.getModule("core.jar")
                 val tmp = File(cacheDir, "extract").apply { mkdirs() }
-                val apkFile = File(tmp, apkName)
-                copyToCache(uri, apkFile)
-                val outDir = File(tmp, "unpacked").apply { mkdirs() }
-                apkMod.callAttr("extract_apk",
-                    apkFile.absolutePath, outDir.absolutePath)
-                // walk unpacked tree for string resource files
-                val found = mutableMapOf<String, String>()
-                outDir.walkTopDown()
-                    .filter { f ->
-                        f.isFile && (f.name.endsWith(".xml")
-                            || f.name.endsWith(".properties")
-                            || f.name.endsWith(".stringpack"))
-                    }
-                    .forEach { f ->
-                        try {
-                            val entries = stringsMod
-                                .callAttr("load_strings", f.absolutePath)
-                                .asList()
-                            for (e in entries) {
-                                val translatable =
-                                    e.get("translatable")?.toString() != "False"
-                                if (!translatable) continue
-                                val key = e.get("key")?.toString() ?: continue
-                                val value = e.get("value")?.toString() ?: continue
-                                found[key] = value
-                            }
-                        } catch (_: Exception) {
-                            // skip files that fail to parse
-                        }
-                    }
-                extractedStrings = found
+                val jarFile = File(tmp, jarName)
+                copyToCache(uri, jarFile)
+                // collect_strings -> {"strings": {value: [origins]}, ...}
+                val result = jarMod.callAttr("collect_strings", jarFile.absolutePath)
+                val stringsMap = result.asMap()
+                    .entries.firstOrNull { it.key.toString() == "strings" }
+                    ?.value?.asMap() ?: emptyMap()
+                // translate engine takes {key: source}; for .jar the
+                // collected value IS the key (matched by value on patch).
+                extractedStrings = stringsMap.keys
+                    .associate { it.toString() to it.toString() }
                 runOnUiThread {
                     setBusy(false)
                     binding.tvStatus.text =
@@ -181,7 +180,6 @@ class MainActivity : AppCompatActivity() {
                 val results = engine.callAttr("translate_strings",
                     extractedStrings, langCode(), "en", provider)
                 val done = engine.callAttr("results_to_dict", results)
-                @Suppress("UNCHECKED_CAST")
                 val translated: Map<String, String> = done.asMap()
                     .map { it.key.toString() to it.value.toString() }.toMap()
                 runOnUiThread {
@@ -203,23 +201,24 @@ class MainActivity : AppCompatActivity() {
 
     private var translatedStrings: Map<String, String> = emptyMap()
 
-    private fun patchApk() {
+    private fun patchJar() {
         if (translatedStrings.isEmpty()) return
-        setBusy(true, "Patching APK…")
+        setBusy(true, "Patching .jar…")
         thread {
             try {
                 val py = Python.getInstance()
-                val patcher = py.getModule("core.patcher")
+                val jarMod = py.getModule("core.jar")
                 val outDir = File(cacheDir, "output").apply { mkdirs() }
-                val apkFile = File(File(cacheDir, "extract"), apkName)
-                val outApk = File(outDir, apkName.replace(".apk", "-id.apk"))
-                patcher.callAttr("patch_apk",
-                    apkFile.absolutePath, translatedStrings,
-                    outApk.absolutePath, langCode())
+                val jarFile = File(File(cacheDir, "extract"), jarName)
+                val outJar = File(outDir,
+                    jarName.replace(".jar", "_${langCode()}.jar", ignoreCase = true))
+                jarMod.callAttr("patch_jar",
+                    jarFile.absolutePath, translatedStrings,
+                    outJar.absolutePath)
                 runOnUiThread {
                     setBusy(false)
-                    binding.tvStatus.text = "Done: ${outApk.name}"
-                    Toast.makeText(this, "Patched APK ready",
+                    binding.tvStatus.text = "Done: ${outJar.name}"
+                    Toast.makeText(this, "Patched .jar ready",
                         Toast.LENGTH_LONG).show()
                 }
             } catch (e: Exception) {
@@ -263,8 +262,8 @@ class MainActivity : AppCompatActivity() {
     private fun setBusy(busy: Boolean, msg: String = "") {
         binding.progressBar.visibility = if (busy) View.VISIBLE else View.GONE
         if (msg.isNotEmpty()) binding.tvStatus.text = msg
-        binding.btnPickApk.isEnabled = !busy
-        binding.btnExtract.isEnabled = !busy && apkUri != null
+        binding.btnPickJar.isEnabled = !busy
+        binding.btnExtract.isEnabled = !busy && jarUri != null
         binding.btnTranslate.isEnabled = !busy && extractedStrings.isNotEmpty()
         binding.btnPatch.isEnabled = !busy && translatedStrings.isNotEmpty()
     }

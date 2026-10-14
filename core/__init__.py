@@ -1,14 +1,15 @@
 """KuroPatch v2 -- patching engine core.
 
 Submodules:
-  apk      APK extraction, binary AndroidManifest.xml parsing, resource discovery.
-  strings  String resource parsers (.properties, strings.xml, stringpack).
-  patcher  Apply translations, repack, zipalign and sign APKs.
+  jar         .jar pipeline: collect strings, apply translations, repack.
+  patcher     Archive engine: JarPatcher, .properties, smali, .class strings.
+  stringpacks Gameloft string-pack resources (LZMA string tables).
 
-All stdlib only. Translation providers live in the sibling
-``translate/`` package; the patcher consumes a plain ``dict[str, str]``.
+On-device target is .jar ONLY -- full APK patching needs apktool (real
+JVM), which cannot run on Android. Translation providers live in the
+sibling ``translate/`` package; the patcher consumes plain dicts.
 """
 
-from . import apk, patcher, strings
+from . import jar, patcher, stringpacks
 
-__all__ = ["apk", "patcher", "strings"]
+__all__ = ["jar", "patcher", "stringpacks"]

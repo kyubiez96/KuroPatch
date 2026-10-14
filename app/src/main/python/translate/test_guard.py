@@ -45,6 +45,26 @@ class TestShouldSkip(unittest.TestCase):
         skip, _ = should_skip(None)
         self.assertTrue(skip)
 
+    def test_identifiers_skipped(self):
+        # single tokens that look like keys / class names, not UI text
+        for t in ["menu_start", "com.game.Main", "level-1", "btn.ok"]:
+            skip, reason = should_skip(t)
+            self.assertTrue(skip, t)
+            self.assertEqual(reason, "identifier")
+        # a single capitalised word IS a UI label
+        skip, _ = should_skip("Quit")
+        self.assertFalse(skip)
+
+    def test_lower_token_skipped(self):
+        skip, reason = should_skip("quit")
+        self.assertTrue(skip)
+        self.assertEqual(reason, "lower-token")
+
+    def test_no_word_skipped(self):
+        skip, reason = should_skip("100%")
+        self.assertTrue(skip)
+        self.assertEqual(reason, "no-word")
+
     def test_real_text_not_skipped(self):
         skip, _ = should_skip("Welcome to the arena!")
         self.assertFalse(skip)

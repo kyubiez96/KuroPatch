@@ -33,11 +33,19 @@ _PATH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Tag-only strings: nothing but markup tags, e.g. "<b></b>", "<xliff:g/>".
+_TAGS_ONLY_RE = re.compile(r"^(?:\s*<[^>]+>\s*)+$")
+
 # Version strings: v1.2.3, 1.0.0, 2.4.1-beta
 _VERSION_RE = re.compile(r"^v?\d+\.\d+(\.\d+)?([-_][\w.]+)?$", re.IGNORECASE)
 
-# String that is ONLY HTML/XML tags (no real text between them)
-_TAGS_ONLY_RE = re.compile(r"^(?:<[^>]+>\s*)+$")
+# Single token with identifier chars (menu_start, com.game.Main, level-1)
+# is a key / class name / format token, not UI text. A single
+# *capitalised* word is usually a UI label ("Quit", "Pause") and passes.
+_IDENT_CHARS_RE = re.compile(r"[_.$/\-:]")
+
+# CJK exemption: a single CJK char is already meaningful ("剑").
+_CJK_RE = re.compile(r"[\u2e80-\u9fff]")
 
 
 def should_skip(text):
@@ -62,6 +70,17 @@ def should_skip(text):
         return True, "tags-only"
     if _NUMBER_RE.match(s):
         return True, "number"
+    # v1 heuristics (restored for the .jar flow: .properties values are
+    # full of identifiers and bare tokens that must never reach a provider).
+    if " " not in s:
+        if _IDENT_CHARS_RE.search(s):
+            return True, "identifier"
+        if s.islower() and s.isalpha():
+            return True, "lower-token"
+    # No real word: only digits/punctuation, e.g. "100%" or "--".
+    # Two or more letters in a row count as a word in any script.
+    if not re.search(r"[^\W\d_]{2,}", s) and not _CJK_RE.search(s):
+        return True, "no-word"
     return False, ""
 
 

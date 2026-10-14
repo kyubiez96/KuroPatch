@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">KuroPatch</string>
+    <string name="apk_not_supported_title">APK needs a PC</string>
+    <string name="apk_not_supported">Full APK patching needs apktool, which requires a real JVM and cannot run on Android. Patch .jar game resources here, or use the PC CLI for APKs.</string>
+    <string name="dialog_ok">OK</string>
 </resources>

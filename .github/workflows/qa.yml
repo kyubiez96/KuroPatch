@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   qa-gates:
-    name: KuroPatch v2 QA (65 tests)
+    name: KuroPatch v2 QA (42 tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -29,9 +29,9 @@
             android:textColor="#8B94AD"
             android:layout_marginBottom="24dp" />
 
-        <!-- APK card -->
+        <!-- JAR card -->
         <com.google.android.material.card.MaterialCardView
-            android:id="@+id/cardApk"
+            android:id="@+id/cardJar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:visibility="gone"
@@ -48,7 +48,7 @@
                 android:padding="16dp">
 
                 <TextView
-                    android:id="@+id/tvApkName"
+                    android:id="@+id/tvJarName"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:textColor="#EEF1F8"
@@ -57,12 +57,12 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Pick APK -->
+        <!-- Pick .jar -->
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnPickApk"
+            android:id="@+id/btnPickJar"
             android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:text="Pick APK"
+            android:text="Pick .jar"
             app:cornerRadius="14dp"
             android:layout_marginBottom="12dp" />
 
@@ -141,7 +141,7 @@
             android:id="@+id/btnPatch"
             android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:text="Patch APK"
+            android:text="Patch .jar"
             android:enabled="false"
             app:cornerRadius="14dp"
             app:backgroundTint="#2EE06F"
@@ -161,7 +161,7 @@
             android:id="@+id/tvStatus"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Pick an APK to start"
+            android:text="Pick a .jar to start"
             android:textColor="#8B94AD"
             android:textSize="14sp" />
 
