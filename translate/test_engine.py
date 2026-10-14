@@ -346,32 +346,32 @@ class TestAgnesProviderKeyHandling(unittest.TestCase):
         # reached CPython's os.environ snapshot, so _api_key() ALWAYS
         # saw "" even with a saved key. set_api_key() is the explicit
         # handoff that fixes it: no env var, setter only -> key seen.
-        from providers import AgnesProvider, set_api_key, _clear_api_key
+        from providers import AgnesProvider, set_api_key
         env = os.environ.pop("AGNES_API_KEY", None)
         try:
-            _clear_api_key()
+            set_api_key(None)
             with self.assertRaises(RuntimeError):
                 AgnesProvider()._api_key()
             set_api_key("test-key")
             self.assertEqual(AgnesProvider()._api_key(), "test-key")
         finally:
-            _clear_api_key()
+            set_api_key(None)
             if env is not None:
                 os.environ["AGNES_API_KEY"] = env
 
     def test_set_api_key_overwrites(self):
         # Key changed mid-session (user re-saves in the prompt):
         # the newest key must win, the old one must not linger.
-        from providers import AgnesProvider, set_api_key, _clear_api_key
+        from providers import AgnesProvider, set_api_key
         env = os.environ.pop("AGNES_API_KEY", None)
         try:
-            _clear_api_key()
+            set_api_key(None)
             set_api_key("key-A")
             self.assertEqual(AgnesProvider()._api_key(), "key-A")
             set_api_key("key-B")
             self.assertEqual(AgnesProvider()._api_key(), "key-B")
         finally:
-            _clear_api_key()
+            set_api_key(None)
             if env is not None:
                 os.environ["AGNES_API_KEY"] = env
 
@@ -379,10 +379,10 @@ class TestAgnesProviderKeyHandling(unittest.TestCase):
         # Blank / None must CLEAR the override, restoring pure env-var
         # lookup -- a cleared key must never keep translating on the
         # stale one.
-        from providers import AgnesProvider, set_api_key, _clear_api_key
+        from providers import AgnesProvider, set_api_key
         env = os.environ.pop("AGNES_API_KEY", None)
         try:
-            _clear_api_key()
+            set_api_key(None)
             set_api_key("test-key")
             self.assertEqual(AgnesProvider()._api_key(), "test-key")
             set_api_key("")
@@ -397,21 +397,21 @@ class TestAgnesProviderKeyHandling(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 AgnesProvider()._api_key()
         finally:
-            _clear_api_key()
+            set_api_key(None)
             if env is not None:
                 os.environ["AGNES_API_KEY"] = env
 
     def test_set_api_key_beats_env(self):
         # Explicit handoff wins over a stale env snapshot.
-        from providers import AgnesProvider, set_api_key, _clear_api_key
+        from providers import AgnesProvider, set_api_key
         old = os.environ.get("AGNES_API_KEY")
         try:
-            _clear_api_key()
+            set_api_key(None)
             os.environ["AGNES_API_KEY"] = "env-key"
             set_api_key("explicit-key")
             self.assertEqual(AgnesProvider()._api_key(), "explicit-key")
         finally:
-            _clear_api_key()
+            set_api_key(None)
             if old is None:
                 os.environ.pop("AGNES_API_KEY", None)
             else:
@@ -419,14 +419,14 @@ class TestAgnesProviderKeyHandling(unittest.TestCase):
 
     def test_env_fallback_still_works(self):
         # CLI path: no setter call at all, env var set -> env used.
-        from providers import AgnesProvider, _clear_api_key
+        from providers import AgnesProvider
         old = os.environ.get("AGNES_API_KEY")
         try:
-            _clear_api_key()
+            set_api_key(None)
             os.environ["AGNES_API_KEY"] = "env-key"
             self.assertEqual(AgnesProvider()._api_key(), "env-key")
         finally:
-            _clear_api_key()
+            set_api_key(None)
             if old is None:
                 os.environ.pop("AGNES_API_KEY", None)
             else:
@@ -438,7 +438,7 @@ class TestAgnesProviderKeyHandling(unittest.TestCase):
         # the captured Authorization header).
         import json
         import urllib.request
-        from providers import AgnesProvider, set_api_key, _clear_api_key
+        from providers import AgnesProvider, set_api_key
 
         class FakeResp:
             def __init__(self, payload):
@@ -465,14 +465,14 @@ class TestAgnesProviderKeyHandling(unittest.TestCase):
         env = os.environ.pop("AGNES_API_KEY", None)
         urllib.request.urlopen = fake_urlopen
         try:
-            _clear_api_key()
+            set_api_key(None)
             set_api_key("test-key")
             self.assertEqual(
                 AgnesProvider().translate("Hello", "en", "id"), "Halo")
             self.assertEqual(captured.get("auth"), "Bearer test-key")
         finally:
             urllib.request.urlopen = orig
-            _clear_api_key()
+            set_api_key(None)
             if env is not None:
                 os.environ["AGNES_API_KEY"] = env
 

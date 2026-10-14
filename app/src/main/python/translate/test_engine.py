@@ -341,6 +341,141 @@ class TestAgnesProviderKeyHandling(unittest.TestCase):
         self.assertNotIn("api_key", params)
         self.assertNotIn("key", params)
 
+    def test_set_api_key_delivers_key_without_env(self):
+        # PROVEN on-device bug (v2.0.9): Kotlin's Os.setenv never
+        # reached CPython's os.environ snapshot, so _api_key() ALWAYS
+        # saw "" even with a saved key. set_api_key() is the explicit
+        # handoff that fixes it: no env var, setter only -> key seen.
+        from providers import AgnesProvider, set_api_key
+        env = os.environ.pop("AGNES_API_KEY", None)
+        try:
+            set_api_key(None)
+            with self.assertRaises(RuntimeError):
+                AgnesProvider()._api_key()
+            set_api_key("test-key")
+            self.assertEqual(AgnesProvider()._api_key(), "test-key")
+        finally:
+            set_api_key(None)
+            if env is not None:
+                os.environ["AGNES_API_KEY"] = env
+
+    def test_set_api_key_overwrites(self):
+        # Key changed mid-session (user re-saves in the prompt):
+        # the newest key must win, the old one must not linger.
+        from providers import AgnesProvider, set_api_key
+        env = os.environ.pop("AGNES_API_KEY", None)
+        try:
+            set_api_key(None)
+            set_api_key("key-A")
+            self.assertEqual(AgnesProvider()._api_key(), "key-A")
+            set_api_key("key-B")
+            self.assertEqual(AgnesProvider()._api_key(), "key-B")
+        finally:
+            set_api_key(None)
+            if env is not None:
+                os.environ["AGNES_API_KEY"] = env
+
+    def test_set_api_key_blank_clears(self):
+        # Blank / None must CLEAR the override, restoring pure env-var
+        # lookup -- a cleared key must never keep translating on the
+        # stale one.
+        from providers import AgnesProvider, set_api_key
+        env = os.environ.pop("AGNES_API_KEY", None)
+        try:
+            set_api_key(None)
+            set_api_key("test-key")
+            self.assertEqual(AgnesProvider()._api_key(), "test-key")
+            set_api_key("")
+            with self.assertRaises(RuntimeError):
+                AgnesProvider()._api_key()
+            set_api_key("test-key")
+            set_api_key(None)
+            with self.assertRaises(RuntimeError):
+                AgnesProvider()._api_key()
+            # Whitespace-only is blank too.
+            set_api_key("   ")
+            with self.assertRaises(RuntimeError):
+                AgnesProvider()._api_key()
+        finally:
+            set_api_key(None)
+            if env is not None:
+                os.environ["AGNES_API_KEY"] = env
+
+    def test_set_api_key_beats_env(self):
+        # Explicit handoff wins over a stale env snapshot.
+        from providers import AgnesProvider, set_api_key
+        old = os.environ.get("AGNES_API_KEY")
+        try:
+            set_api_key(None)
+            os.environ["AGNES_API_KEY"] = "env-key"
+            set_api_key("explicit-key")
+            self.assertEqual(AgnesProvider()._api_key(), "explicit-key")
+        finally:
+            set_api_key(None)
+            if old is None:
+                os.environ.pop("AGNES_API_KEY", None)
+            else:
+                os.environ["AGNES_API_KEY"] = old
+
+    def test_env_fallback_still_works(self):
+        # CLI path: no setter call at all, env var set -> env used.
+        from providers import AgnesProvider
+        old = os.environ.get("AGNES_API_KEY")
+        try:
+            set_api_key(None)
+            os.environ["AGNES_API_KEY"] = "env-key"
+            self.assertEqual(AgnesProvider()._api_key(), "env-key")
+        finally:
+            set_api_key(None)
+            if old is None:
+                os.environ.pop("AGNES_API_KEY", None)
+            else:
+                os.environ["AGNES_API_KEY"] = old
+
+    def test_translate_uses_set_api_key_without_env(self):
+        # Full path, exact on-device scenario: NO env var, setter only.
+        # Provider must reach the API with the setter key (proven by
+        # the captured Authorization header).
+        import json
+        import urllib.request
+        from providers import AgnesProvider, set_api_key
+
+        class FakeResp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self):
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        payload = {"choices": [{"message": {"content": "Halo"},
+                                "finish_reason": "stop"}]}
+        captured = {}
+        orig = urllib.request.urlopen
+
+        def fake_urlopen(req, timeout=None):
+            captured["auth"] = req.get_header("Authorization")
+            return FakeResp(payload)
+
+        env = os.environ.pop("AGNES_API_KEY", None)
+        urllib.request.urlopen = fake_urlopen
+        try:
+            set_api_key(None)
+            set_api_key("test-key")
+            self.assertEqual(
+                AgnesProvider().translate("Hello", "en", "id"), "Halo")
+            self.assertEqual(captured.get("auth"), "Bearer test-key")
+        finally:
+            urllib.request.urlopen = orig
+            set_api_key(None)
+            if env is not None:
+                os.environ["AGNES_API_KEY"] = env
+
     def test_setter_works_without_env(self):
         # PROVEN on-device bug (v2.0.9): Kotlin's Os.setenv never
         # reaches CPython's os.environ snapshot, so the provider saw
@@ -389,6 +524,23 @@ class TestAgnesProviderKeyHandling(unittest.TestCase):
             os.environ.pop("AGNES_API_KEY", None)
             if env is not None:
                 os.environ["AGNES_API_KEY"] = env
+
+    def test_libc_setenv_does_not_reach_os_environ(self):
+        # The OLD mechanism (Kotlin Os.setenv) is dead by CPython
+        # design: os.environ is a startup snapshot; a libc setenv()
+        # from outside Python never updates it. This pins that fact
+        # so nobody "simplifies" the setter away and reintroduces
+        # the on-device bug. Probe var, not the real key, to avoid
+        # polluting AGNES_API_KEY -- the mechanism is identical.
+        import ctypes
+        probe = "KUROPATCH_SETENV_PROBE"
+        os.environ.pop(probe, None)
+        try:
+            ctypes.CDLL(None).setenv(probe.encode(), b"probe-value", 1)
+            self.assertEqual(os.environ.get(probe, ""), "")
+        finally:
+            ctypes.CDLL(None).unsetenv(probe.encode())
+            os.environ.pop(probe, None)
 
     def test_setter_beats_env(self):
         # On-device the setter carries the CURRENT saved key; a stale
