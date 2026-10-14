@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 from cache import TranslationCache
-from engine import translate_strings, results_to_dict
+from engine import translate_strings, results_to_dict, results_summary
 from glossary import Glossary
 from providers import BaseProvider, PassthroughProvider
 
@@ -190,6 +190,46 @@ class TestEngine(unittest.TestCase):
         d = results_to_dict(res)
         self.assertEqual(d["a"], "ID:Hi")
         self.assertEqual(d["b"], "1080x1920")
+
+    def test_results_summary_reports_failures(self):
+        # On-device bug (Sims 3): a dead provider failed all 10
+        # translatable strings, but the UI showed "0 translated, 44
+        # unchanged" with NO error -- results_to_dict discards the
+        # failure info. results_summary must expose it.
+        class DeadProvider:
+            name = "agnes"
+
+            def translate(self, text, src, tgt):
+                raise RuntimeError("HTTP 401: invalid API key")
+
+        res = translate_strings({"a": "Hello world", "b": "1080x1920"},
+                                provider=DeadProvider())
+        summary = results_summary(res)
+        self.assertEqual(summary["total"], 2)
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(summary["skipped"], 1)
+        self.assertEqual(summary["changed"], 0)
+        self.assertIn("401", summary["first_error"])
+        # And prove the dict alone really does lose it (the bug):
+        d = results_to_dict(res)
+        self.assertEqual(d, {"a": "Hello world", "b": "1080x1920"})
+
+    def test_results_summary_mixed_run(self):
+        class FlakyProvider:
+            name = "flaky"
+
+            def translate(self, text, src, tgt):
+                if "boom" in text:
+                    raise RuntimeError("boom failed")
+                return "ID:" + text
+
+        res = translate_strings({"a": "Hello world", "b": "boom town"},
+                                provider=FlakyProvider())
+        summary = results_summary(res)
+        self.assertEqual(summary["translated"], 1)
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(summary["changed"], 1)
+        self.assertIn("boom", summary["first_error"])
 
 
 class FakeJavaMap:

@@ -41,6 +41,36 @@ from .stringpacks import (
 
 __all__ = ["collect_strings", "patch_jar", "should_collect"]
 
+
+def _is_language_name(value):
+    """True if `value` IS a language name ('English', 'DEUTSCH', ...).
+
+    Language names in .class constant pools are NOT display-only text:
+    Gameloft J2ME games (proven on Castlevania) store them in a static
+    String[] and match them with String.equals() against the names
+    read from TRAD.lang. Translating them ('English' -> 'Inggris')
+    breaks the match, the language lookup finds nothing, and the game
+    loads no strings at all (blank white screen in J2ME Loader).
+    The trade-off is deliberate: a skipped language name costs one
+    untranslated word; a translated one costs a bricked game.
+
+    Lazy import: core must not depend on translate at module load
+    time (translate/ never imports core/, so no cycle, but keep the
+    boundary explicit). Cached after the first call.
+    """
+    cached = getattr(_is_language_name, "_glossary", None)
+    if cached is None:
+        try:
+            from translate.glossary import Glossary
+        except ImportError:
+            try:
+                from ..translate.glossary import Glossary
+            except ImportError:
+                return False
+        cached = Glossary()
+        _is_language_name._glossary = cached
+    return cached.lookup_language(value) is not None
+
 # Values that are never UI text in any language.
 _TECHNICAL_TOKENS = frozenset({
     "true", "false", "null", "none", "yes", "no", "on", "off",
@@ -48,6 +78,11 @@ _TECHNICAL_TOKENS = frozenset({
 })
 _HAS_LETTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)
 _CJK_RE = re.compile(r"[\u2e80-\u9fff]", re.UNICODE)
+# Maximal printable runs (UTF-8 text incl. high bytes) for data-key
+# extraction. Runs shorter than 3 bytes are noise.
+_DATA_RUN_RE = re.compile(rb"[\x20-\x7e\x80-\xff]{3,}")
+# Keys are short identifiers; truncate over-long runs before matching.
+_MAX_KEY_LEN = 200
 
 
 def should_collect(text, minimum=3, translate_all=False):
@@ -70,6 +105,61 @@ def should_collect(text, minimum=3, translate_all=False):
     if not _HAS_LETTER_RE.search(stripped):
         return False, "no-letters"
     return True, ""
+
+
+def _data_key_strings(workspace, candidates):
+    """Candidates stored as separate entries in non-code resources: keys.
+
+    A candidate string that appears as its own entry in a non-code
+    resource (a length-prefixed / delimiter-separated entry in a data
+    file) is a LOOKUP KEY, not UI text -- translating it breaks the
+    lookup. Proven on-device: Castlevania's language names
+    (English/Deutsch/...) live in ``TRAD.lang`` (the language index);
+    the patched .class said "Inggris" while ``TRAD.lang`` still said
+    "English", so the language never loaded and the game showed a
+    blank screen in J2ME Loader.
+
+    Only maximal printable runs are matched, so a candidate embedded
+    in prose (a help text inside a .dat) is NOT flagged -- keys are
+    stored as separate entries, prose is not. .class/.properties/smali
+    (translation sources), string packs (translation targets) and
+    META-INF metadata are excluded from the data blob. False positives
+    fail SAFE: an over-skipped string just stays untranslated, the
+    game still works. False negatives remain possible for keys stored
+    in UTF-16 or other non-UTF-8 encodings.
+    """
+    cand_bytes = {}
+    for c in candidates:
+        try:
+            cand_bytes[c.encode("utf-8")] = c
+        except UnicodeEncodeError:
+            continue
+    if not cand_bytes:
+        return set()
+    keys = set()
+    for root, _dirs, files in os.walk(workspace):
+        for filename in files:
+            ws_path = os.path.join(root, filename)
+            rel = os.path.relpath(ws_path, workspace).replace(os.sep, "/")
+            if rel.startswith("META-INF/"):
+                continue
+            if rel.lower().endswith((".class", ".properties", ".smali")):
+                continue
+            if is_string_pack_entry(rel):
+                continue
+            try:
+                with open(ws_path, "rb") as fh:
+                    raw = fh.read()
+            except OSError:
+                continue
+            for m in _DATA_RUN_RE.finditer(raw):
+                run = m.group(0)
+                if len(run) > _MAX_KEY_LEN:
+                    run = run[:_MAX_KEY_LEN]
+                hit = cand_bytes.get(run)
+                if hit is not None:
+                    keys.add(hit)
+    return keys
 
 
 def collect_strings(jar_path, minimum=3, translate_all=False, workspace=None):
@@ -124,6 +214,12 @@ def collect_strings(jar_path, minimum=3, translate_all=False, workspace=None):
                 continue
             rel = os.path.relpath(path, patcher.workspace)
             for index, decoded in iter_class_strings(data):
+                # Language names in .class pools are logic keys
+                # (matched via equals() against TRAD.lang) -- never
+                # collect them, or the game breaks (see
+                # _is_language_name).
+                if _is_language_name(decoded):
+                    continue
                 _add(decoded, f"{rel}::ldc#{index}")
         for root, _dirs, files in os.walk(patcher.workspace):
             for filename in files:
@@ -140,7 +236,16 @@ def collect_strings(jar_path, minimum=3, translate_all=False, workspace=None):
                 for pi, pack in enumerate(packs):
                     for si, value in enumerate(pack.strings):
                         _add(value, f"{rel}::pack{pi}#{si}")
-        return {"strings": strings, "total_seen": total_seen, "files": counts}
+        # Drop data-key strings: candidates stored as separate entries
+        # in non-code resources are lookup keys, not UI text.
+        dropped_keys = 0
+        if strings:
+            keys = _data_key_strings(patcher.workspace, set(strings))
+            for k in keys:
+                if strings.pop(k, None) is not None:
+                    dropped_keys += 1
+        return {"strings": strings, "total_seen": total_seen,
+                "files": counts, "data_keys_dropped": dropped_keys}
     finally:
         if workspace is None:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -265,6 +370,12 @@ def patch_jar(jar_path, translations, out_path, workspace=None):
             # raw-keyed map: pool strings may carry surrounding whitespace
             class_map = {}
             for _idx, decoded in iter_class_strings(data):
+                # Defense in depth: a hand-made / stale translation map
+                # containing language names must not reach .class pools
+                # either -- collect already skips them, but patch must
+                # be safe on its own (see _is_language_name).
+                if _is_language_name(decoded):
+                    continue
                 new = _match_translation(decoded, translations)
                 if new is not None:
                     class_map[decoded] = new

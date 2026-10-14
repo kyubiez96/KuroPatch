@@ -299,6 +299,15 @@ class MainActivity : AppCompatActivity() {
                 val done = engine.callAttr("results_to_dict", results)
                 val translated: Map<String, String> = done.asMap()
                     .map { it.key.toString() to it.value.toString() }.toMap()
+                // results_summary is REQUIRED, not optional: the dict
+                // above cannot distinguish "provider returned this
+                // verbatim" from "provider FAILED and source was kept".
+                // Without it a dead provider shows as "0 translated,
+                // N unchanged" with no error at all (Sims 3 on-device).
+                val summaryMap = engine.callAttr("results_summary", results).asMap()
+                    .map { it.key.toString() to it.value.toString() }.toMap()
+                val failed = summaryMap["failed"]?.toIntOrNull() ?: 0
+                val firstError = summaryMap["first_error"] ?: ""
                 safeUi {
                     setBusy(false)
                     // "Translated" counts only strings whose text actually
@@ -308,11 +317,21 @@ class MainActivity : AppCompatActivity() {
                     val n = translated.size
                     val changed = translated.count { (k, v) -> k != v }
                     binding.tvStatus.text =
-                        "$changed strings translated, ${n - changed} unchanged"
+                        "$changed strings translated, ${n - changed - failed} unchanged" +
+                        if (failed > 0) ", $failed failed" else ""
                     binding.btnPatch.isEnabled = true
                     // stash for patch step
                     translatedStrings = translated
                     translatedLangCode = langCode()
+                    // Total provider failure (nothing translated because
+                    // the provider is dead) must be LOUD, not a quiet
+                    // "unchanged" status: the user needs to know to
+                    // check their API key / connection.
+                    if (failed > 0 && changed == 0) {
+                        showError("Translate failed",
+                            if (firstError.isNotEmpty()) firstError
+                            else "Provider failed on all strings — check your API key and connection.")
+                    }
                 }
             } catch (e: Exception) {
                 safeUi {

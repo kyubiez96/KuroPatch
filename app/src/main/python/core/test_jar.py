@@ -564,5 +564,90 @@ class TestPropertiesEdgeCases(unittest.TestCase):
             self.assertIn("not a string", str(ctx.exception))
 
 
+class TestLanguageNameKeysNotTranslated(unittest.TestCase):
+    """On-device bug (Castlevania): patching translated language names
+    ('English' -> 'Inggris') into .class pools bricked the game.
+
+    The names are logic keys, not display text: DOSMidlet.aE() reads
+    names from TRAD.lang via readUTF() and matches them with
+    String.equals() against a static String[] built in <clinit>.
+    Translated keys never match -> language lookup finds nothing ->
+    blank white screen in J2ME Loader. So .class pools must never
+    have language names translated -- neither collected nor patched.
+    """
+
+    def test_class_language_names_not_collected(self):
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "game.jar")
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("Game.class",
+                           _make_class_with_string("English"))
+                z.writestr("Other.class",
+                           _make_class_with_string("DEUTSCH"))
+                z.writestr("Third.class",
+                           _make_class_with_string("Hello Player"))
+            got = jar_mod.collect_strings(src)
+            self.assertNotIn("English", got["strings"])
+            self.assertNotIn("DEUTSCH", got["strings"])
+            self.assertIn("Hello Player", got["strings"])
+
+    def test_class_language_names_not_patched(self):
+        # Defense in depth: even a hand-made map containing language
+        # names must not rewrite them in .class pools.
+        import core.jar as jar_mod
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "game.jar")
+            out = os.path.join(td, "out.jar")
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("Game.class",
+                           _make_class_with_string("English"))
+                z.writestr("a.properties", "greet=Hello Player\n")
+            jar_mod.patch_jar(src, {"English": "Inggris",
+                                    "Hello Player": "Halo Pemain"}, out)
+            with zipfile.ZipFile(out) as z:
+                self.assertIn(b"English", z.read("Game.class"))
+                self.assertNotIn(b"Inggris", z.read("Game.class"))
+                self.assertIn(b"Halo Pemain", z.read("a.properties"))
+
+    def test_real_castlevania_language_keys_survive(self):
+        # The exact broken jar: the 12 language-name strings must not
+        # be collected, and a patch map containing them must leave the
+        # .class entries byte-identical (so the equals() match in
+        # DOSMidlet.aE() still succeeds against TRAD.lang).
+        import core.jar as jar_mod
+        src = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "..", "user", "files",
+            "castlevania_dawn_of_sorrow_320x240-276636_2_5uug.jar")
+        src = os.path.normpath(src)
+        if not os.path.exists(src):
+            self.skipTest("Kovak's Castlevania jar not present")
+        got = jar_mod.collect_strings(src)
+        lang_names = ["Deutsch", "English", "Español", "Français",
+                      "Italiano", "Português", "DEUTSCH", "ENGLISH",
+                      "ESPAÑOL", "FRANÇAIS", "ITALIANO", "PORTUGUÊS"]
+        for name in lang_names:
+            self.assertNotIn(name, got["strings"],
+                             f"language key {name!r} must not be collected")
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "out.jar")
+            evil = {n: "X" + n for n in lang_names}
+            evil["DOSBoss loading exception"] = "Pengecualian pemuatan"
+            jar_mod.patch_jar(src, evil, out)
+            with zipfile.ZipFile(src) as zo, zipfile.ZipFile(out) as zn:
+                # Each class must keep exactly the language keys it
+                # originally had (DOSMidlet: mixed-case, c: ALL-CAPS).
+                # A translated key breaks the equals() match in
+                # DOSMidlet.aE() against TRAD.lang.
+                for entry in ("DOSMidlet.class", "c.class"):
+                    orig = zo.read(entry)
+                    new = zn.read(entry)
+                    for name in lang_names:
+                        if name.encode("utf-8") in orig:
+                            self.assertIn(name.encode("utf-8"), new,
+                                          f"{entry} lost language key {name!r}")
+
+
 if __name__ == "__main__":
     unittest.main()

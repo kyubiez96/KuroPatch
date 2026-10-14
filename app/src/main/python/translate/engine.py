@@ -200,3 +200,33 @@ def translate_strings(strings, target_lang="id", source_lang="en",
 def results_to_dict(results):
     """Collapse results to {key: translation} (failed/skipped keep source)."""
     return {r.key: r.translation for r in results}
+
+
+def results_summary(results):
+    """Summarize a TranslateResult list -> plain dict for the UI.
+
+    The UI MUST call this alongside :func:`results_to_dict`: the dict
+    alone cannot distinguish "provider returned this verbatim" from
+    "provider FAILED and the source was kept". Without this, a dead
+    provider (bad key, no network) shows as "0 translated, N
+    unchanged" with no error at all -- the silent-failure bug reported
+    on-device for the Sims 3 jar (44 strings, 10 failed, 0 shown).
+    """
+    summary = {
+        "total": 0,
+        "translated": 0,
+        "skipped": 0,
+        "cached": 0,
+        "failed": 0,
+        "changed": 0,
+        "first_error": "",
+    }
+    for r in results:
+        summary["total"] += 1
+        if r.status in ("translated", "skipped", "cached", "failed"):
+            summary[r.status] += 1
+        if r.translation != r.source:
+            summary["changed"] += 1
+        if r.status == "failed" and not summary["first_error"]:
+            summary["first_error"] = r.detail or "translation failed"
+    return summary
