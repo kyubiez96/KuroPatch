@@ -1,6 +1,7 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.serialization' version '1.9.22'
     id 'com.chaquo.python'
 }
 
@@ -21,6 +22,14 @@ android {
         // (NOTE: '#' is NOT a comment in Groovy -- '#' lines here
         // broke the Gradle parse. Use '//'.)
         versionName "2.0.13"
+
+        // Owner token for kuro.eksi.biz.id cloud mode. Injected from the
+        // KURO_OWNER_TOKEN env var (CI secret). NEVER hardcode a token
+        // here -- the APK is public and the token would be trivially
+        // extractable. Empty string when unset: cloud mode then refuses
+        // to run with a clear "not configured" dialog (fail-closed).
+        buildConfigField "String", "KURO_OWNER_TOKEN",
+            "\"${System.getenv('KURO_OWNER_TOKEN') ?: ''}\""
 
         ndk { abiFilters "arm64-v8a", "armeabi-v7a" }
     }
@@ -54,4 +63,11 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
+    // Cloud mode (kuro.eksi.biz.id): OkHttp + kotlinx.serialization.
+    // Additive: the local Chaquopy pipeline does not use these.
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3'
+    testImplementation 'junit:junit:4.13.2'
+    // NOTE: no MockWebServer — the sandbox blocks JVM TCP loopback, so
+    // CloudRepositoryTest uses a fake OkHttp Call.Factory instead.
 }

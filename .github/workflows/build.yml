@@ -107,6 +107,8 @@ jobs:
           python-version: '3.11'
 
       - name: Build with Gradle
+        env:
+          KURO_OWNER_TOKEN: ${{ secrets.KURO_OWNER_TOKEN }}
         run: gradle assembleDebug assembleRelease --stacktrace
 
       - name: Upload APKs

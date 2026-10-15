@@ -15,6 +15,11 @@ import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import org.kuropatch.cloud.CloudApiError
+import org.kuropatch.cloud.CloudRepository
+import org.kuropatch.cloud.CloudResult
+import org.kuropatch.cloud.JobPollResponse
+import org.kuropatch.cloud.LibraryEntryDto
 import org.kuropatch.databinding.ActivityMainBinding
 import java.io.File
 import kotlin.concurrent.thread
@@ -132,6 +137,12 @@ class MainActivity : AppCompatActivity() {
         binding.btnTranslate.isEnabled = false
         binding.btnPatch.isEnabled = false
         binding.cardJar.visibility = View.VISIBLE
+        // A new pick invalidates any in-flight cloud job for the old jar:
+        // the poller would otherwise download jar A's result after the
+        // user moved on to jar B.
+        if (cloudPolling) cancelCloudJob()
+        updateCloudUi()
+        if (isCloudMode()) binding.btnTranslate.isEnabled = true
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -144,7 +155,14 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnPickJar.setOnClickListener { launchPicker() }
         binding.btnExtract.setOnClickListener { extractStrings() }
-        binding.btnTranslate.setOnClickListener { translateStrings() }
+        // Cloud mode reroutes Translate to the server flow; the local
+        // Chaquopy pipeline is untouched. While a cloud job polls, the
+        // same button becomes Cancel.
+        binding.btnTranslate.setOnClickListener {
+            if (cloudPolling) cancelCloudJob()
+            else if (isCloudMode()) cloudTranslate()
+            else translateStrings()
+        }
         // Change-key reuses the first-time prompt: after Save the
         // prompt hands the new key to Python and continues into
         // translateStrings() (a no-op when nothing is extracted).
@@ -152,6 +170,17 @@ class MainActivity : AppCompatActivity() {
         binding.btnPatch.setOnClickListener { patchJar() }
         binding.btnSave.setOnClickListener { launchSaveDialog() }
         binding.btnShare.setOnClickListener { shareOutput() }
+        // Cloud mode controls (default OFF). isPressed guard: programmatic
+        // setChecked from updateCloudUi() must not re-trigger the handler.
+        binding.switchCloud.setOnCheckedChangeListener { button, checked ->
+            if (!button.isPressed) return@setOnCheckedChangeListener
+            prefs().edit().putBoolean("cloud_mode", checked).apply()
+            if (!checked && cloudPolling) cancelCloudJob()
+            updateCloudUi()
+        }
+        binding.btnCloudKey.setOnClickListener { promptCloudLlmKey() }
+        binding.btnCloudLibrary.setOnClickListener { showCloudLibrary() }
+        updateCloudUi()
         restoreLastOutput()
     }
 
@@ -448,6 +477,487 @@ class MainActivity : AppCompatActivity() {
      * not leave Patch serving the previous translations. */
     private var translatedProvider: String = ""
 
+    // ================= Cloud mode (kuro.eksi.biz.id) =================
+    // ADDITIVE section: the local pipeline above is not modified. When
+    // the cloud toggle is ON, Translate uploads the .jar to the server
+    // (extract -> translate -> repack all server-side) and downloads
+    // the verified result. Default OFF.
+    private val cloudRepo by lazy {
+        CloudRepository(
+            ownerToken = { BuildConfig.KURO_OWNER_TOKEN },
+            llmApiKey = { getCloudLlmKey() },
+            llmModel = { getCloudLlmModel() },
+        )
+    }
+    @Volatile private var cloudPolling = false
+    private var cloudJobId: String? = null
+    private var cloudNetFailures = 0
+
+    private fun prefs() = getSharedPreferences("kuropatch", MODE_PRIVATE)
+    private fun isCloudMode(): Boolean = prefs().getBoolean("cloud_mode", false)
+    private fun getCloudLlmKey(): String =
+        prefs().getString("cloud_llm_key", "") ?: ""
+    private fun getCloudLlmModel(): String =
+        prefs().getString("cloud_llm_model", "")?.takeIf { it.isNotBlank() }
+            ?: CloudRepository.DEFAULT_CLOUD_MODEL
+
+    /** Sync button visibility/enabled state with the cloud toggle. */
+    private fun updateCloudUi() {
+        val cloud = isCloudMode()
+        binding.switchCloud.isChecked = cloud
+        binding.btnCloudKey.visibility = if (cloud) View.VISIBLE else View.GONE
+        // The Agnes key button belongs to the local pipeline; in cloud
+        // mode the cloud key button takes its place.
+        binding.btnChangeKey.visibility = if (cloud) View.GONE else View.VISIBLE
+        if (cloudPolling) return // poll loop owns the buttons right now
+        if (cloud) {
+            // Cloud flow bypasses local extract/patch entirely.
+            binding.btnExtract.isEnabled = false
+            binding.btnPatch.isEnabled = false
+        } else {
+            binding.btnExtract.isEnabled = jarUri != null
+            binding.btnPatch.isEnabled = translatedStrings.isNotEmpty()
+        }
+    }
+
+    /** Cloud-flow busy state. Separate from setBusy() (local flow). */
+    private fun setCloudBusy(busy: Boolean, msg: String = "") {
+        binding.progressBar.visibility = if (busy) View.VISIBLE else View.GONE
+        if (msg.isNotEmpty()) binding.tvStatus.text = msg
+        val idle = !busy
+        binding.btnPickJar.isEnabled = idle
+        binding.btnExtract.isEnabled = false // cloud never uses local extract
+        binding.btnPatch.isEnabled = false   // ...nor local patch
+        // The Translate button doubles as Cancel while polling.
+        binding.btnTranslate.isEnabled = idle || cloudPolling
+        binding.btnTranslate.text =
+            if (cloudPolling) "Cancel cloud job" else "Auto-translate"
+        binding.btnChangeKey.isEnabled = idle
+        binding.btnCloudKey.isEnabled = idle
+        binding.btnCloudLibrary.isEnabled = idle
+        binding.switchCloud.isEnabled = idle
+        val hasOutput = patchedJar?.exists() == true
+        binding.btnSave.isEnabled = idle && hasOutput
+        binding.btnShare.isEnabled = idle && hasOutput
+    }
+
+    /** Entry point for Translate in cloud mode. */
+    private fun cloudTranslate() {
+        if (cloudPolling) return // click router sends this to cancel instead
+        val uri = jarUri
+        if (uri == null) {
+            showError("Pick a .jar first", "Cloud translate needs a picked .jar.")
+            return
+        }
+        // Fail-closed: a public build without the injected owner token
+        // must never send an unauthenticated request.
+        if (BuildConfig.KURO_OWNER_TOKEN.isBlank()) {
+            showError("Cloud not configured",
+                "This build has no cloud owner token. Cloud mode needs a " +
+                    "build with KURO_OWNER_TOKEN set.")
+            return
+        }
+        // Cloud v1 is EN->ID only; the backend 400s anything else.
+        // Fail LOUD rather than silently switching the user's language.
+        if (langCode() != "id") {
+            showError("Cloud v1: English → Indonesian only",
+                "Pick Indonesian as the target language for cloud translate, " +
+                    "or turn cloud mode off for other languages.")
+            return
+        }
+        if (getCloudLlmKey().isBlank()) {
+            promptCloudLlmKey()
+            return
+        }
+        binding.progressBar.isIndeterminate = true
+        binding.progressBar.progress = 0
+        setCloudBusy(true, "Preparing cloud upload…")
+        thread(name = "cloud-submit") {
+            try {
+                // by-hash + upload need a local file: copy via SAF.
+                val tmp = File(cacheDir, "cloud").apply { mkdirs() }
+                val jarFile = File(tmp, jarName)
+                copyToCache(uri, jarFile)
+                val sha = CloudRepository.sha256Hex(jarFile)
+                safeUi { binding.tvStatus.text = "Checking cloud cache…" }
+                when (val h = cloudRepo.byHash(sha)) {
+                    is CloudResult.Ok -> {
+                        val v = h.value
+                        if (v.found && v.downloadUrl != null) {
+                            // Cache hit: straight to verified download.
+                            downloadCloudPath(v.downloadUrl)
+                            return@thread
+                        }
+                        if (v.found && v.jobId != null) {
+                            // Same-params job already running server-side:
+                            // re-attach the poller, do NOT re-upload.
+                            attachCloudPoll(v.jobId)
+                            return@thread
+                        }
+                        uploadAndPoll(jarFile)
+                    }
+                    is CloudResult.ApiError ->
+                        safeUi {
+                            setCloudBusy(false)
+                            showCloudErrorWithRetry("Cloud lookup failed", h.error) {
+                                cloudTranslate()
+                            }
+                        }
+                    is CloudResult.NetworkError ->
+                        safeUi {
+                            setCloudBusy(false)
+                            showCloudErrorWithRetry("Cloud lookup failed",
+                                CloudApiError("NETWORK", h.message, true, 0)) {
+                                cloudTranslate()
+                            }
+                        }
+                }
+            } catch (e: Exception) {
+                safeUi {
+                    setCloudBusy(false)
+                    showError("Cloud failed", e.message ?: "unknown error")
+                }
+            }
+        }
+    }
+
+    /** Multipart upload, then attach the poller to the new job. */
+    private fun uploadAndPoll(jarFile: File) {
+        safeUi {
+            binding.progressBar.isIndeterminate = true
+            binding.tvStatus.text = "Uploading to cloud…"
+        }
+        val deviceId = android.provider.Settings.Secure.getString(
+            contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+        when (val s = cloudRepo.submit(jarFile, deviceId)) {
+            is CloudResult.Ok -> attachCloudPoll(s.value.jobId)
+            is CloudResult.ApiError ->
+                safeUi {
+                    setCloudBusy(false)
+                    showCloudErrorWithRetry("Cloud upload failed", s.error) {
+                        cloudTranslate()
+                    }
+                }
+            is CloudResult.NetworkError ->
+                safeUi {
+                    setCloudBusy(false)
+                    showCloudErrorWithRetry("Cloud upload failed",
+                        CloudApiError("NETWORK", s.message, true, 0)) {
+                        cloudTranslate()
+                    }
+                }
+        }
+    }
+
+    /** Poll GET /jobs/{id} every 2s; drive the determinate bar. */
+    private fun attachCloudPoll(jobId: String) {
+        cloudJobId = jobId
+        cloudPolling = true
+        cloudNetFailures = 0
+        safeUi {
+            binding.progressBar.isIndeterminate = false
+            binding.progressBar.progress = 0
+            binding.tvStatus.text = "Cloud job queued…"
+            setCloudBusy(true)
+        }
+        thread(name = "cloud-poll") {
+            while (cloudPolling) {
+                when (val p = cloudRepo.poll(jobId)) {
+                    is CloudResult.Ok -> {
+                        cloudNetFailures = 0
+                        val v = p.value
+                        safeUi { updateCloudProgress(v) }
+                        when (v.status) {
+                            "COMPLETED" -> {
+                                cloudPolling = false
+                                downloadCloudJob(jobId)
+                                return@thread
+                            }
+                            "FAILED" -> {
+                                cloudPolling = false
+                                val msg = v.errorMsg ?: "unknown error"
+                                safeUi {
+                                    setCloudBusy(false)
+                                    showError("Cloud job failed", msg)
+                                }
+                                return@thread
+                            }
+                            // QUEUED / EXTRACTING / TRANSLATING / REPACKING:
+                            // keep polling.
+                        }
+                    }
+                    is CloudResult.ApiError -> {
+                        cloudPolling = false
+                        safeUi {
+                            setCloudBusy(false)
+                            if (p.error.httpCode == 404) {
+                                showError("Cloud job gone",
+                                    "The job expired or was deleted server-side.")
+                            } else {
+                                showCloudErrorWithRetry("Cloud poll failed", p.error) {
+                                    cloudTranslate()
+                                }
+                            }
+                        }
+                        return@thread
+                    }
+                    is CloudResult.NetworkError -> {
+                        // Transient blips must not kill a long job:
+                        // tolerate a few, then fail with a retry option.
+                        cloudNetFailures++
+                        if (cloudNetFailures >= 5) {
+                            cloudPolling = false
+                            safeUi {
+                                setCloudBusy(false)
+                                showCloudErrorWithRetry("Cloud poll failed",
+                                    CloudApiError("NETWORK", p.message, true, 0)) {
+                                    cloudTranslate()
+                                }
+                            }
+                            return@thread
+                        }
+                    }
+                }
+                try {
+                    Thread.sleep(2000)
+                } catch (ie: InterruptedException) {
+                    return@thread
+                }
+            }
+        }
+    }
+
+    /** Determinate progress from server counts (v2.0.13 bar). */
+    private fun updateCloudProgress(v: JobPollResponse) {
+        val pr = v.progress
+        binding.progressBar.isIndeterminate = false
+        binding.progressBar.progress = pr.percent.toInt().coerceIn(0, 100)
+        binding.tvStatus.text =
+            "Cloud ${v.status.lowercase()}: ${pr.percent.toInt()}% " +
+                "(${pr.done}/${pr.total} strings, ${pr.cached} cached)"
+        // Refresh the Cancel label while polling.
+        setCloudBusy(true)
+    }
+
+    /** Cancel: stop the poller, best-effort DELETE server-side. */
+    private fun cancelCloudJob() {
+        val id = cloudJobId
+        cloudPolling = false
+        cloudJobId = null
+        if (id != null) thread(name = "cloud-cancel") {
+            try {
+                cloudRepo.deleteJob(id)
+            } catch (e: Exception) {
+                android.util.Log.w("KuroPatch", "cloud cancel failed", e)
+            }
+        }
+        setCloudBusy(false)
+        binding.tvStatus.text = "Cloud job cancelled"
+    }
+
+    /** Download a COMPLETED job result (SHA-256 verified). */
+    private fun downloadCloudJob(jobId: String) {
+        safeUi {
+            binding.progressBar.isIndeterminate = true
+            binding.tvStatus.text = "Downloading result…"
+        }
+        when (val d = cloudRepo.downloadJob(jobId, cloudOutputFile())) {
+            is CloudResult.Ok -> safeUi { onCloudDownloaded(d.value.file) }
+            is CloudResult.ApiError ->
+                safeUi {
+                    setCloudBusy(false)
+                    // Retry must hop off the UI thread: downloadCloudJob
+                    // does blocking network I/O.
+                    showCloudErrorWithRetry("Cloud download failed", d.error) {
+                        thread(name = "cloud-dl-retry") { downloadCloudJob(jobId) }
+                    }
+                }
+            is CloudResult.NetworkError ->
+                safeUi {
+                    setCloudBusy(false)
+                    showCloudErrorWithRetry("Cloud download failed",
+                        CloudApiError("NETWORK", d.message, true, 0)) {
+                        thread(name = "cloud-dl-retry") { downloadCloudJob(jobId) }
+                    }
+                }
+        }
+    }
+
+    /** Download via a by-hash hit's relative download_url (cache-hit path). */
+    private fun downloadCloudPath(relativeUrl: String) {
+        safeUi {
+            binding.progressBar.isIndeterminate = true
+            binding.tvStatus.text = "Cloud cache hit — downloading…"
+        }
+        when (val d = cloudRepo.downloadFromPath(relativeUrl, cloudOutputFile())) {
+            is CloudResult.Ok -> safeUi { onCloudDownloaded(d.value.file) }
+            is CloudResult.ApiError ->
+                safeUi {
+                    setCloudBusy(false)
+                    showCloudErrorWithRetry("Cloud download failed", d.error) {
+                        cloudTranslate()
+                    }
+                }
+            is CloudResult.NetworkError ->
+                safeUi {
+                    setCloudBusy(false)
+                    showCloudErrorWithRetry("Cloud download failed",
+                        CloudApiError("NETWORK", d.message, true, 0)) {
+                        cloudTranslate()
+                    }
+                }
+        }
+    }
+
+    private fun cloudOutputFile(): File {
+        val base = if (jarName.endsWith(".jar", ignoreCase = true))
+            jarName.dropLast(4) else jarName.ifBlank { "game" }
+        return File(outputDir(), "${base}_id_cloud.jar")
+    }
+
+    /** A verified cloud result reuses the local Save/Share flow. */
+    private fun onCloudDownloaded(file: File) {
+        setCloudBusy(false)
+        cloudJobId = null
+        patchedJar = file
+        binding.tvStatus.text =
+            "Done: ${file.name} (${file.length() / 1024} KB) — pick where to save it"
+        binding.btnSave.isEnabled = true
+        binding.btnShare.isEnabled = true
+        if (!isFinishing && !isDestroyed) launchSaveDialog()
+    }
+
+    /** Error dialog; retryable errors offer Retry (restarts the flow). */
+    private fun showCloudErrorWithRetry(
+        title: String,
+        error: CloudApiError,
+        retry: () -> Unit,
+    ) {
+        val b = MaterialAlertDialogBuilder(this)
+            .setTitle(title)
+            .setMessage("${error.code}: ${error.message}")
+            .setPositiveButton("OK", null)
+        if (error.retryable) {
+            b.setNeutralButton("Retry") { _, _ -> retry() }
+        }
+        b.show()
+    }
+
+    /** Cloud LLM key dialog (ai.eksi.biz.id gateway key + model). */
+    private fun promptCloudLlmKey() {
+        val keyInput = android.widget.EditText(this).apply {
+            hint = "ai.eksi.biz.id API key"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(getCloudLlmKey())
+        }
+        val modelInput = android.widget.EditText(this).apply {
+            hint = "Model"
+            val saved = prefs().getString("cloud_llm_model", "").orEmpty()
+            setText(saved.ifBlank { CloudRepository.DEFAULT_CLOUD_MODEL })
+        }
+        val layout = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(48, 16, 48, 0)
+            addView(keyInput)
+            addView(modelInput)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Cloud LLM key")
+            .setMessage("API key for the ai.eksi.biz.id gateway, used ONLY for " +
+                "cloud translate. This is SEPARATE from your Agnes key: the " +
+                "cloud server forwards it to the gateway and cannot use " +
+                "Agnes keys.")
+            .setView(layout)
+            .setPositiveButton("Save") { _, _ ->
+                val key = keyInput.text.toString().trim()
+                if (key.isEmpty()) {
+                    Toast.makeText(this, "API key cannot be empty",
+                        Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                val model = modelInput.text.toString().trim()
+                    .ifEmpty { CloudRepository.DEFAULT_CLOUD_MODEL }
+                prefs().edit()
+                    .putString("cloud_llm_key", key)
+                    .putString("cloud_llm_model", model)
+                    .apply()
+                Toast.makeText(this, "Cloud key saved", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** List server-side library entries; tap to download one. */
+    private fun showCloudLibrary() {
+        if (BuildConfig.KURO_OWNER_TOKEN.isBlank()) {
+            showError("Cloud not configured", "This build has no cloud owner token.")
+            return
+        }
+        setCloudBusy(true, "Loading cloud library…")
+        thread(name = "cloud-library") {
+            when (val r = cloudRepo.listLibrary()) {
+                is CloudResult.Ok ->
+                    safeUi {
+                        setCloudBusy(false)
+                        showLibraryDialog(r.value)
+                    }
+                is CloudResult.ApiError ->
+                    safeUi {
+                        setCloudBusy(false)
+                        showCloudErrorWithRetry("Cloud library failed", r.error) {
+                            showCloudLibrary()
+                        }
+                    }
+                is CloudResult.NetworkError ->
+                    safeUi {
+                        setCloudBusy(false)
+                        showError("Cloud library failed", r.message)
+                    }
+            }
+        }
+    }
+
+    private fun showLibraryDialog(entries: List<LibraryEntryDto>) {
+        if (entries.isEmpty()) {
+            showError("Cloud library", "No cloud results yet.")
+            return
+        }
+        val names = entries.map { e ->
+            "${e.jarName.ifBlank { "result.jar" }} — " +
+                "${e.stringCount} strings, ${e.sizeBytes / 1024} KB"
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Cloud library")
+            .setItems(names) { _, which -> downloadLibraryEntry(entries[which]) }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun downloadLibraryEntry(entry: LibraryEntryDto) {
+        setCloudBusy(true, "Downloading ${entry.jarName}…")
+        thread(name = "cloud-lib-dl") {
+            val dest = File(outputDir(),
+                entry.jarName.ifBlank { "cloud_result.jar" })
+            when (val d = cloudRepo.downloadLibraryEntry(entry, dest)) {
+                is CloudResult.Ok -> safeUi { onCloudDownloaded(d.value.file) }
+                is CloudResult.ApiError ->
+                    safeUi {
+                        setCloudBusy(false)
+                        showCloudErrorWithRetry("Download failed", d.error) {
+                            downloadLibraryEntry(entry)
+                        }
+                    }
+                is CloudResult.NetworkError ->
+                    safeUi {
+                        setCloudBusy(false)
+                        showError("Download failed", d.message)
+                    }
+            }
+        }
+    }
+    // =============== end Cloud mode ===============
+
     private fun patchJar() {
         if (translatedStrings.isEmpty()) return
         // Fast operation: keep the bar indeterminate.
@@ -677,6 +1187,13 @@ class MainActivity : AppCompatActivity() {
         val hasOutput = patchedJar?.exists() == true
         binding.btnSave.isEnabled = !busy && hasOutput
         binding.btnShare.isEnabled = !busy && hasOutput
+        // Cloud controls are separate UI but share the activity: lock them
+        // during local work so the mode can't flip mid-translate (the
+        // local thread's setBusy(false) would otherwise leave buttons in
+        // the wrong mode's state).
+        binding.btnCloudKey.isEnabled = !busy
+        binding.btnCloudLibrary.isEnabled = !busy
+        binding.switchCloud.isEnabled = !busy
     }
 
     private fun showError(title: String, msg: String) {

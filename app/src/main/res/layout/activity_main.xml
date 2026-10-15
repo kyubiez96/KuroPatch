@@ -125,6 +125,50 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- Cloud mode (kuro.eksi.biz.id). Default OFF: the local
+             on-device pipeline stays the default. When ON, the
+             Translate button routes to the cloud flow (upload .jar,
+             server translates, download result) instead of the local
+             Chaquopy pipeline. -->
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/switchCloud"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Cloud mode"
+            android:textColor="#EEF1F8"
+            android:layout_marginBottom="2dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Server translates the .jar (v1: English → Indonesian only). Default OFF."
+            android:textColor="#8B94AD"
+            android:textSize="12sp"
+            android:layout_marginBottom="8dp" />
+
+        <!-- Cloud LLM key (ai.eksi.biz.id). Only visible in cloud mode.
+             This is a SEPARATE key from the Agnes key above: the cloud
+             backend forwards it to the ai.eksi.biz.id gateway. -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnCloudKey"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Set cloud LLM key"
+            android:visibility="gone"
+            app:cornerRadius="14dp"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Previously translated cloud results (server library). -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnCloudLibrary"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Cloud library"
+            app:cornerRadius="14dp"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_marginBottom="12dp" />
+
         <!-- Translate -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnTranslate"
