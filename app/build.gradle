@@ -13,7 +13,7 @@ android {
         applicationId "org.kuropatch"
         minSdk 26
         targetSdk 34
-        versionCode 7
+        versionCode 8
         // versionName MUST match the release tag (v2.0.13 -> "2.0.13").
         // v2.0.2/v2.0.3/v2.0.5 shipped with a stale versionName
         // because the tag was created before the bump landed.
@@ -21,7 +21,7 @@ android {
         // versionCode must only go up.
         // (NOTE: '#' is NOT a comment in Groovy -- '#' lines here
         // broke the Gradle parse. Use '//'.)
-        versionName "2.0.13"
+        versionName "2.1.0"
 
         // Owner token for kuro.eksi.biz.id cloud mode. Injected from the
         // KURO_OWNER_TOKEN env var (CI secret). NEVER hardcode a token
