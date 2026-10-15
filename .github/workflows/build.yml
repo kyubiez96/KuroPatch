@@ -51,7 +51,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          name="$(grep -E 'versionName' app/build.gradle | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
+          name="$(grep -E '^[[:space:]]*versionName' app/build.gradle | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
           if [ "$name" != "$tag" ]; then
             echo "::error::versionName ($name) does not match tag ($tag) -- bump versionName before tagging"
             exit 1
